@@ -72,13 +72,18 @@ def generate_flow_direction(dem_path: Path, out_path: Path) -> Path:
         wbt = whitebox.WhiteboxTools()
         wbt.verbose = False
 
+        # WhiteboxTools requires absolute paths
+        dem_abs = str(dem_path.resolve())
+        out_abs = str(out_path.resolve())
+
         # WhiteboxTools requires filling depressions first
         filled_path = out_path.parent / "dem_filled.tif"
+        filled_abs = str(filled_path.resolve())
         if not filled_path.exists():
-            wbt.fill_depressions(str(dem_path), str(filled_path))
+            wbt.fill_depressions(dem_abs, filled_abs)
             logger.info("Filled DEM depressions: %s", filled_path)
 
-        wbt.d8_pointer(str(filled_path), str(out_path))
+        wbt.d8_pointer(filled_abs, out_abs)
         logger.info("Generated flow direction raster: %s", out_path)
 
     except ImportError:
@@ -103,17 +108,23 @@ def generate_flow_accumulation(dem_path: Path, out_path: Path) -> Path:
         wbt = whitebox.WhiteboxTools()
         wbt.verbose = False
 
+        # WhiteboxTools requires absolute paths
+        dem_abs = str(dem_path.resolve())
+        out_abs = str(out_path.resolve())
+
         # Needs filled DEM and flow direction
         filled_path = out_path.parent / "dem_filled.tif"
+        filled_abs = str(filled_path.resolve())
         flow_dir_path = out_path.parent / "flow_direction.tif"
+        flow_dir_abs = str(flow_dir_path.resolve())
 
         if not filled_path.exists():
-            wbt.fill_depressions(str(dem_path), str(filled_path))
+            wbt.fill_depressions(dem_abs, filled_abs)
 
         if not flow_dir_path.exists():
-            wbt.d8_pointer(str(filled_path), str(flow_dir_path))
+            wbt.d8_pointer(filled_abs, flow_dir_abs)
 
-        wbt.d8_flow_accumulation(str(flow_dir_path), str(out_path), out_type="cells")
+        wbt.d8_flow_accumulation(flow_dir_abs, out_abs, out_type="cells")
         logger.info("Generated flow accumulation raster: %s", out_path)
 
     except ImportError:
