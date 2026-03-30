@@ -1,0 +1,50 @@
+# Off-Grid Property Finder — Default Configuration
+# Study area: Lunenburg region, Nova Scotia
+
+study_area:
+  name: lunenburg
+  # Approximate bounding box in EPSG:2961 (NAD83(CSRS) UTM Zone 20N)
+  # Covers roughly 50km x 50km around Lunenburg
+  bbox: [360000, 4880000, 410000, 4930000]
+
+cell_size_m: 250
+working_crs: "EPSG:2961"
+
+paths:
+  raw: data/raw
+  processed: data/processed
+  output: output
+
+# Stage A scoring weights (must sum to 100 for enabled criteria)
+# Hydro is the primary differentiator — solar works everywhere in NS
+# but winter needs secondary power. Elevation = coastal flood resilience.
+weights:
+  hydro: 45
+  elevation: 25
+  access: 20
+  solar: 5
+  buildable: 5
+
+enabled_criteria:
+  - hydro
+  - solar
+  - elevation
+  - access
+  - buildable
+
+# Confidence deductions (subtracted from 100)
+confidence_deductions:
+  no_flood_data: 20
+  hydro_drainage_proxy_only: 20
+  hydro_20m_dem: 15
+  incomplete_land_cover_mask: 10
+  no_road_evidence_200m: 15
+
+# Exclusion settings
+exclusion_overlap_threshold: 0.5  # 50% overlap triggers hard exclusion
+
+# Parcel settings (Stage B)
+min_parcel_area_acres: 1.0
+
+# Optional preference criteria (disabled by default, weight 0)
+preferences: {}

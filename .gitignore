@@ -1,0 +1,63 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+dist/
+build/
+.eggs/
+.pytest_cache/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# GIS data files (large, downloaded manually)
+*.tif
+*.tiff
+*.shp
+*.shx
+*.dbf
+*.prj
+*.cpg
+*.sbn
+*.sbx
+*.gpkg
+*.geojson
+*.gdb/
+*.pbf
+*.osm
+*.laz
+*.las
+*.sqlite
+
+# Keep .gitkeep files
+!.gitkeep
+
+# Data directories (large GIS files, not tracked)
+data/raw/
+data/processed/
+
+# Output files
+output/
+
+# Validation screenshots (ad-hoc debug images)
+*_after_fix.png
+*_zoomed_*.png
+
+# Playwright MCP
+.playwright-mcp/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Environment
+.env
