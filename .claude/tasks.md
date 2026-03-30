@@ -4,8 +4,8 @@
 > Last updated: 2026-03-30
 
 ## Project State
-- **Stage:** M1 MVP COMPLETE + confidence fix + analyze command
-- **GitHub:** https://github.com/gmann14/off-grid-property-finder (8 commits, fully pushed)
+- **Stage:** M1 MVP COMPLETE + confidence fix + flow accumulation fix + analyze command
+- **GitHub:** https://github.com/gmann14/off-grid-property-finder
 - **Stack:** Python 3.12, GDAL/Fiona/Rasterio/GeoPandas/WhiteboxTools, Click CLI
 - **Tests:** 92 passing across 18 test files
 - **Output:** ~40,000 scored cells, ~39,924 eligible, interactive Folium map generated
@@ -39,9 +39,12 @@
 ### Scoring Calibration ⚠️ (PARTIALLY ADDRESSED)
 - Too many cells scoring 100/100 on buildable (100%) and solar (98%) — thresholds too generous
 - ~~All confidence bands show "medium" (60.0)~~ → FIXED: per-cell deductions now applied
+- ~~Flow accumulation not generating (WhiteboxTools silent failure)~~ → FIXED: absolute path bug in dem.py
+- Confidence now: 8.7% high (80), 91.3% medium (55-70), 0% low — meaningful differentiation
 - Hydro is inverted: 80% of cells score 0 (most have no stream) — expected but means hydro only differentiates the ~20% with streams
 - `python -m src analyze` now available for distribution diagnostics
-- **Still needed:** Re-run `score` pipeline to regenerate output with confidence fix, then re-analyze
+- Flood data deferred — no flood.gpkg yet (contributes -20 global confidence deduction)
+- Composite score spread is healthy: P10=12.5, P50=32.5, P90=71.0
 
 ## Upcoming Milestones
 
