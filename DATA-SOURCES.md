@@ -14,7 +14,7 @@
 - **Coverage:** All of Nova Scotia
 - **Cost:** Free
 - **Description:** Hydrologically correct 20m Digital Elevation Model. This is purpose-built for watershed/hydro analysis — ideal for our use case.
-- **Projection:** NAD83 UTM Zone 20N (EPSG:2961)
+- **Projection:** NAD83(CSRS) UTM Zone 20N (EPSG:2961). Note: EPSG:26920 is plain NAD83 UTM Zone 20N — use EPSG:2961 consistently since NS LiDAR products use NAD83(CSRS).
 - **Quality:** Excellent for province-wide analysis. Derived from 1:10,000 topographic data.
 
 ### 1.2 Canadian Digital Elevation Model (CDEM)
@@ -22,13 +22,13 @@
 - **Source:** Natural Resources Canada (NRCan)
 - **URL (FTP):** https://ftp.maps.canada.ca/pub/nrcan_rncan/elevation/cdem_mnec/
 - **URL (Open Data Portal):** https://open.canada.ca/data/en/dataset/7f245e4d-76c2-4caa-951a-45d1d2051333
-- **URL (Google Earth Engine):** `NRCan/CDEM` — https://developers.google.com/earth-engine/datasets/catalog/NRCan_CDEM
+- **URL (Google Earth Engine, optional later-phase):** `NRCan/CDEM` — https://developers.google.com/earth-engine/datasets/catalog/NRCan_CDEM
 - **Format:** GeoTIFF (FTP), ImageCollection (GEE)
 - **Resolution:** ~0.75 arc-seconds (~23m at NS latitude)
 - **Coverage:** All of Canada
 - **Cost:** Free
 - **WMS:** `https://maps.geogratis.gc.ca/wms/elevation_en?service=WMS&version=1.3.0&request=GetCapabilities`
-- **Notes:** Good fallback. Available in GEE for cloud processing. Download by NTS 1:250,000 map sheet.
+- **Notes:** Good fallback. Prefer FTP or Open Data downloads for MVP. Download by NTS 1:250,000 map sheet.
 
 ### 1.3 High Resolution DEM (HRDEM) — LiDAR-derived
 
@@ -134,7 +134,7 @@ Not a data source per se — we derive this from the DEM:
 - **Aspect raster:** Generated from DEM using GDAL `gdaldem aspect`
 - **Slope raster:** Generated from DEM using GDAL `gdaldem slope`
 - **Hillshade:** Optional, for visualization
-- **Tools:** `gdaldem`, `rasterio`, `richdem`, or GEE `ee.Terrain`
+- **Tools:** `gdaldem`, `rasterio`, or `richdem`
 
 ---
 
@@ -147,12 +147,13 @@ Not a data source per se — we derive this from the DEM:
 - **URL (Map view):** https://data.novascotia.ca/Lands-Forests-and-Wildlife/Crown-Land-Map/sqec-gjbw
 - **URL (Canada Open Data):** https://open.canada.ca/data/en/dataset/faef7b10-6357-8918-ad93-26d64ad82c83
 - **Download (GeoNova):** https://nsgi.novascotia.ca/WSF_DDS/DDS.svc/DownloadFile?tkey=fhrTtdnDvfytwLz6&id=87
-- **ArcGIS REST:** https://nsgiwa.novascotia.ca/arcgis/rest/services/PLAN/PLANCrownLand.../MapServer
+- **ArcGIS REST:** Check GeoNova / NSGI service catalog for the current Crown Land service endpoint
 - **ArcGIS Item:** https://www.arcgis.com/home/item.html?id=e1245f034994416f834647956dea7d85
 - **Format:** Shapefile (via GeoNova download), GeoJSON/CSV (via Open Data API)
 - **Coverage:** All of Nova Scotia
 - **Cost:** Free
 - **Description:** Spatial dataset of all Crown lands under administration of the Minister of Natural Resources and Renewables, per the Crown Lands Act.
+- **Use in scoring:** Amenity / adjacency only. This dataset does **not** imply any right to cross, build on, or harvest from Crown land.
 
 ---
 
@@ -166,7 +167,7 @@ Not a data source per se — we derive this from the DEM:
 - **Format:** Shapefile/GDB (via DataLocator download)
 - **Coverage:** All of Nova Scotia (cadastral data)
 - **Cost:** Account required; basic access is free. Some datasets may have license restrictions.
-- **Notes:** This is the authoritative source for NS property parcel boundaries. The "Planning" theme on GeoNova includes cadastral/parcel data. Must register for an account to access.
+- **Notes:** This is the authoritative source for NS property parcel boundaries. The "Planning" theme on GeoNova includes cadastral/parcel data. Must register for an account to access. If bulk access is blocked, do parcel-independent scoring first and join to parcels later.
 - **ArcGIS Services:** Various NSGI ArcGIS REST services may expose parcel layers.
 
 ### 5.2 NS Property Online
@@ -189,7 +190,7 @@ Not a data source per se — we derive this from the DEM:
 - **Coverage:** All ~400K NS properties
 - **Cost:** Individual lookups free on website; bulk data may have fees
 - **Contents:** Assessment values, property classification, AAN (Assessment Account Number)
-- **Notes:** PVSC directs bulk/GIS data requests to NSGI. Individual lookups work for validation.
+- **Notes:** PVSC directs bulk/GIS data requests to NSGI. Individual lookups work for validation. Property classification may also be useful later for parcel-level filtering in Stage B.
 
 ### 5.4 ViewPoint.ca
 
@@ -199,7 +200,7 @@ Not a data source per se — we derive this from the DEM:
 - **API:** No public API
 - **Format:** Web interface only
 - **Contents:** MLS listings, property boundaries, assessment data, sale history, aerial imagery
-- **Notes:** Best single source for NS property research in a browser. No API or bulk data access. Could potentially be scraped (TOS considerations). Shows property boundaries overlaid on map.
+- **Notes:** Best single source for NS property research in a browser. No API or bulk data access. Best used for manual validation of top-ranked results.
 
 ### 5.5 Regrid (formerly Loveland Technologies)
 
@@ -211,14 +212,13 @@ Not a data source per se — we derive this from the DEM:
 - **Cost:** Paid API plans. Free browse on web map.
 - **Notes:** Third-party commercial parcel data aggregator. Has NS coverage. Most reliable way to get bulk parcel data programmatically. API pricing varies.
 
-### 5.6 OpenStreetMap (Landuse Polygons) — Fallback
+### 5.6 Parcel Data Warnings and Fallback Strategy
 
-- **Source:** OpenStreetMap contributors
-- **URL:** https://download.geofabrik.de/north-america/canada/nova-scotia-latest.osm.pbf
-- **Format:** PBF (OSM), convertible to Shapefile
-- **Coverage:** Variable — some rural parcels mapped, many are not
-- **Cost:** Free (ODbL license)
-- **Notes:** NOT a reliable source for property boundaries, but may have some landuse polygons. Better for roads.
+> These are workflow notes, not data sources. They are here because parcel access is the biggest delivery risk.
+
+**Do not use OSM as a parcel substitute.** OSM landuse polygons (available from the [Geofabrik NS extract](https://download.geofabrik.de/north-america/canada/nova-scotia-latest.osm.pbf)) are inconsistent, non-authoritative, and unsuitable for parcel-level scoring. Use OSM for roads and contextual landuse only.
+
+**Fallback if parcel data is blocked:** Generate a fixed `250m × 250m` square candidate grid across the rural study area, score those cells first, and join to parcels later when boundaries become available. This avoids pretending that non-parcel polygons are parcels and keeps runtime predictable. See IMPLEMENTATION-BACKLOG.md task B3 for the decision gate.
 
 ---
 
@@ -231,7 +231,7 @@ Not a data source per se — we derive this from the DEM:
 - **Format:** PBF → convert to Shapefile with `ogr2ogr` or `osmium`
 - **Coverage:** Excellent for NS — all public roads mapped
 - **Cost:** Free (ODbL)
-- **Notes:** Best free source for road network. Includes road classification (highway, residential, track, etc.). Rural/forest roads well-represented.
+- **Notes:** Best free source for road network. Includes road classification (highway, residential, track, etc.). Rural/forest roads are often well represented. Use for access confidence only, not proof of legal access.
 
 ### 6.2 National Road Network (NRN)
 
@@ -249,6 +249,16 @@ Not a data source per se — we derive this from the DEM:
 - **Format:** Shapefile
 - **Coverage:** Nova Scotia
 - **Cost:** Free (with NSGI account)
+- **Notes:** Good complement to OSM when you want a provincial authoritative road layer.
+
+### 6.4 Civic Addressing / Address Points
+
+- **Source:** NSGI / GeoNova
+- **URL:** https://nsgi.novascotia.ca/gdd/
+- **Format:** Shapefile/GDB or service layer, depending on access path
+- **Coverage:** Nova Scotia
+- **Cost:** Usually free with NSGI access
+- **Notes:** Useful for access-confidence scoring and parcel validation. Address points are not proof of legal access, but they are better evidence of practical access than road distance alone.
 
 ---
 
@@ -268,10 +278,29 @@ Not a data source per se — we derive this from the DEM:
 ### 7.2 Canada Landcover (30m)
 
 - **Source:** NRCan
-- **URL:** Available via GEE or Open Data
+- **URL:** Available via NRCan Open Data
 - **Format:** GeoTIFF
 - **Resolution:** 30m
 - **Notes:** Less detailed than NSTDB but useful for quick classification.
+
+### 7.3 Building Footprints
+
+- **Source:** NRCan / Microsoft / Open Government Canada
+- **URL (Open Data):** https://open.canada.ca/data/en/dataset/7a5cda52-c7df-427f-9ced-26f19a8a64d6
+- **URL (Microsoft):** https://github.com/microsoft/CanadianBuildingFootprints
+- **Format:** GeoJSON / Shapefile / GeoPackage depending on source package
+- **Coverage:** Broad coverage across Nova Scotia
+- **Cost:** Free
+- **Notes:** Useful for masking already-developed areas and detecting parcels/sites that are not raw land.
+
+### 7.4 Water / Wetland Polygons
+
+- **Source:** NSHN / NHN
+- **URL:** See NSHN and NHN sources above
+- **Format:** Shapefile / GML depending on source
+- **Coverage:** Nova Scotia / Canada
+- **Cost:** Free
+- **Notes:** Use polygon water bodies, swamp/wet hydro classes, and related hydro features as conservative masking inputs for solar/buildable-area scoring. Do not treat these layers as a full authoritative wetland-development exclusion dataset unless a dedicated wetland layer is added.
 
 ---
 
@@ -293,7 +322,7 @@ Not a data source per se — we derive this from the DEM:
 - **URL:** https://www.realtor.ca/
 - **Method:** HTTP requests to their internal API endpoints
 - **Legal:** Against TOS. Use at own risk.
-- **Notes:** Realtor.ca has a search API that returns JSON. Well-documented in various GitHub repos. Filter by property type, price, location. For personal research use only.
+- **Notes:** Keep this out of the core MVP. Prefer manual cross-reference or licensed feeds.
 
 ### 8.3 Nova Scotia Association of REALTORS (NSAR)
 
@@ -305,11 +334,11 @@ Not a data source per se — we derive this from the DEM:
 
 - **Kijiji:** https://www.kijiji.ca/b-real-estate/nova-scotia/
 - **LandWatch:** https://www.landwatch.com/nova-scotia-land-for-sale
-- **Notes:** Some rural/off-grid properties are listed here rather than MLS. Manual monitoring or scraping required.
+- **Notes:** Some rural/off-grid properties are listed here rather than MLS. Treat these as manual-monitoring sources unless you have a compliant feed or workflow.
 
 ---
 
-## 9. Additional / Bonus Data Sources
+## 9. Supplemental and Exclusion Layers
 
 ### 9.1 NS Open Data Portal
 
@@ -318,11 +347,19 @@ Not a data source per se — we derive this from the DEM:
 
 ### 9.2 Protected Areas
 
-- **Source:** NS Environment
-- **URL:** Check NS Open Data
-- **Notes:** Useful as a disqualifier — can't develop in protected areas.
+- **Source:** NS Environment / GeoNova / NS Open Data
+- **URL:** https://geonova.novascotia.ca/geodata/
+- **Format:** Varies by layer
+- **Notes:** Critical exclusion layer for MVP wherever coverage is available.
 
-### 9.3 Geology / Groundwater
+### 9.3 Flood Mapping / Coastal Risk
+
+- **Source:** GeoNova / NS departments / regional flood-risk programs
+- **URL:** https://geonova.novascotia.ca/geodata/
+- **Format:** Varies by layer and coverage
+- **Notes:** Needed for authoritative flood exclusions. Coverage and freshness vary, so treat this as mixed-availability rather than guaranteed province-wide coverage.
+
+### 9.4 Geology / Groundwater
 
 - **Source:** NS Department of Natural Resources
 - **URL:** https://novascotia.ca/natr/meb/download/gis-data-maps.asp
@@ -330,16 +367,11 @@ Not a data source per se — we derive this from the DEM:
 - **Cost:** Free
 - **Notes:** Surficial geology, bedrock, groundwater atlas. Useful for well drilling assessment.
 
-### 9.4 Climate Normals
+### 9.5 Climate Normals
 
 - **Source:** Environment Canada
 - **URL:** https://climate.weather.gc.ca/climate_normals/
 - **Notes:** Precipitation normals useful for flow estimation.
-
-### 9.5 Building Footprints
-
-- **Source:** NRCan / Microsoft
-- **Notes:** >95% of NS building footprints available on Open Government. Useful for identifying already-developed vs. undeveloped parcels.
 
 ---
 
@@ -347,7 +379,7 @@ Not a data source per se — we derive this from the DEM:
 
 ### Freely Available (no account needed)
 - ✅ NS Enhanced DEM (20m)
-- ✅ CDEM (via FTP or GEE)
+- ✅ CDEM (via FTP or Open Data)
 - ✅ HRDEM (via FTP)
 - ✅ NSHN (stream network)
 - ✅ NHN (national hydro)
@@ -356,25 +388,32 @@ Not a data source per se — we derive this from the DEM:
 - ✅ OpenStreetMap roads
 - ✅ HYDAT database
 - ✅ NSTDB Land Cover
+- ✅ Water / wetland polygons
+- ✅ Building footprints
 - ✅ NS Geology data
 
 ### Account Required (free)
-- ⚠️ NSGI DataLocator (property parcels, LiDAR tiles, NSTDB layers)
+- ⚠️ NSGI DataLocator (property parcels, LiDAR tiles, NSTDB layers, civic-address layers)
 
 ### Paid / Restricted
 - 💰 NS Property Online (subscription for title searches)
 - 💰 Regrid API (parcel data, paid plans)
 - 🔒 CREA DDF / Realtor.ca API (REALTOR members only)
 - 🔒 PVSC bulk assessment data (via NSGI, may have fees)
+- ⚠️ Some flood/coastal-risk resources may be partial, regional, or distributed outside a single open-download workflow
 
 ### MVP-Critical Downloads
 
 For the MVP, download these first:
 1. **NS Enhanced DEM** (dp055.asp) — single file, covers all NS
 2. **NSHN** (stream network shapefile) — from data.novascotia.ca or GeoNova
-3. **Crown Land** (shapefile) — from data.novascotia.ca
-4. **OpenStreetMap NS extract** — from Geofabrik
-5. **HYDAT database** — from wateroffice.ec.gc.ca
+3. **NSTDB Land Cover** — for open-area / canopy masking
+4. **Building footprints** — if available for the study area; otherwise mark solar/buildability confidence lower
+5. **Water / wet polygons** — from NSHN / NHN classes
+6. **OpenStreetMap NS extract** — from Geofabrik
+7. **Protected-area layer(s)** — from GeoNova / NS Open Data
+8. **Flood/coastal-risk layer(s)** — if available for the study area
+9. **HYDAT database** — from wateroffice.ec.gc.ca
 
 Total download size: ~2–5GB estimated.
 
@@ -385,6 +424,7 @@ Total download size: ~2–5GB estimated.
 | Resource | URL |
 |---|---|
 | GeoNova (NS GIS hub) | https://geonova.novascotia.ca/ |
+| GeoNova GeoData | https://geonova.novascotia.ca/geodata/ |
 | NS Open Data Portal | https://data.novascotia.ca/ |
 | NSGI DataLocator | https://nsgi.novascotia.ca/gdd/ |
 | NSGI Elevation Explorer | https://nsgi.novascotia.ca/datalocator/elevation |
@@ -397,6 +437,6 @@ Total download size: ~2–5GB estimated.
 | ViewPoint.ca | https://www.viewpoint.ca/ |
 | PVSC | https://www.pvsc.ca/ |
 | NS Surface Water Approval | https://novascotia.ca/nse/water/withdrawalApproval.asp |
-| NRCan Solar Maps | https://www.nrcan.gc.ca/.../photovoltaic-potential-and-solar-resource-maps-canada/18366 |
-| CDEM on GEE | https://developers.google.com/earth-engine/datasets/catalog/NRCan_CDEM |
+| NRCan Solar Maps | https://www.nrcan.gc.ca/our-natural-resources/energy-sources-distribution/renewable-energy/solar-photovoltaic-energy/tools-solar-photovoltaic-energy/photovoltaic-potential-and-solar-resource-maps-canada/18366 |
+| CDEM (optional GEE mirror) | https://developers.google.com/earth-engine/datasets/catalog/NRCan_CDEM |
 | Cyr et al. 2011 (NB SHP) | https://www.sciencedirect.com/science/article/abs/pii/S0960148111001753 |
