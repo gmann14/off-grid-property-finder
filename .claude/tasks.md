@@ -7,7 +7,7 @@
 - **Stage:** M1 MVP COMPLETE + confidence fix + flow accumulation fix + analyze command
 - **GitHub:** https://github.com/gmann14/off-grid-property-finder
 - **Stack:** Python 3.12, GDAL/Fiona/Rasterio/GeoPandas/WhiteboxTools, Click CLI
-- **Tests:** 92 passing across 18 test files
+- **Tests:** 92 passing across 15 test files
 - **Output:** ~40,000 scored cells, ~39,924 eligible, interactive Folium map generated
 - **Modules:** 28 source files in src/ + scoring/ subpackage (8 files)
 

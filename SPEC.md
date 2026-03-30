@@ -702,7 +702,7 @@ See [IMPLEMENTATION-BACKLOG.md](./IMPLEMENTATION-BACKLOG.md) for the execution p
 ├── src/
 │   ├── __init__.py
 │   ├── __main__.py            # python -m src entrypoint
-│   ├── cli.py                 # Click CLI (check-data, ingest, prepare, score, visualize)
+│   ├── cli.py                 # Click CLI (check-data, ingest, prepare, score, visualize, analyze)
 │   ├── config.py              # YAML config loading and validation
 │   ├── constants.py           # Threshold tables, weights, flags
 │   ├── logging_config.py      # Logging setup
@@ -728,13 +728,14 @@ See [IMPLEMENTATION-BACKLOG.md](./IMPLEMENTATION-BACKLOG.md) for the execution p
 │       ├── buildable.py       # Buildable area percentage
 │       ├── confidence.py      # Confidence scoring and banding
 │       └── preferences.py     # Parcel aggregation (Stage B)
-├── tests/                     # 67 tests across 16 files
+├── tests/                     # 92 tests across 15 test files
 │   ├── conftest.py            # Synthetic test fixtures
 │   ├── test_config.py
 │   ├── test_cli.py
 │   ├── test_grid.py
 │   ├── test_exclusions.py
 │   ├── test_export.py
+│   ├── test_analyze.py        # Score distribution analysis tests
 │   ├── test_scoring_composite.py
 │   ├── test_scoring_confidence.py
 │   ├── test_scoring_hydro.py

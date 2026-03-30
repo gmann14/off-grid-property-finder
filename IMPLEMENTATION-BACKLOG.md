@@ -44,7 +44,7 @@ Exit criteria:
 - ✅ End-to-end CLI run works (check-data, ingest, prepare, score, visualize)
 - ⚠️ Top-ranked results need calibration validation (too many 100/100 scores)
 - ✅ Runtime is acceptable for the target study area
-- ✅ 67 tests passing across 16 test files
+- ✅ 92 tests passing across 15 test files
 
 ### M2: Parcel-Aware Pipeline 🔴 BLOCKED
 
@@ -70,7 +70,7 @@ Exit criteria:
 - Core outputs are stable enough for repeatable use
 - Score distribution has meaningful differentiation (not clustered at 100/100)
 
-**Known issue:** Too many cells score 100/100 across multiple criteria. All confidence bands land at "medium" (60.0). Needs threshold tuning and/or scoring logic investigation.
+**Known issue:** Buildable (100%) and solar (98%) still cluster at max score — thresholds too generous for rural NS. Confidence bands now differentiated: 8.7% high, 91.3% medium, 0% low (was all "medium" before per-cell deduction fix). Composite score spread is healthy (P10=12.5, P50=32.5, P90=71.0).
 
 ## 3. Recommended Initial Stack ✅ LOCKED
 
@@ -161,7 +161,7 @@ Legend:
 
 | Task | Status | Notes |
 |------|--------|-------|
-| T1. Test harness and scoring unit tests | ✅ | 67 tests, synthetic fixtures, all scorers covered |
+| T1. Test harness and scoring unit tests | ✅ | 92 tests, synthetic fixtures, all scorers covered |
 | T2. Integration test for end-to-end pipeline | ✅ | Full pipeline with synthetic data |
 
 ### Epic H: Deferred / Post-MVP

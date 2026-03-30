@@ -170,6 +170,7 @@ tests/
 ├── test_exclusions.py  # Exclusion logic
 ├── test_export.py      # CSV/GeoJSON export
 ├── test_scoring_*.py   # Per-scorer unit tests (7 files)
+├── test_analyze.py     # Score distribution analysis tests
 └── test_integration.py # End-to-end pipeline test
 ```
 
