@@ -16,6 +16,14 @@ from src.constants import (
 
 logger = logging.getLogger("property_finder")
 
+# Per-cell flag deduction amounts.  These are subtracted from the
+# confidence score for each individual cell that triggers the flag,
+# in addition to any global data-quality deductions.
+PER_CELL_DEDUCTIONS = {
+    FLAG_ACCESS_UNVERIFIED: 15,   # no road evidence within 200m
+    FLAG_HYDRO_LOW_CONFIDENCE: 10,  # hydro score is zero / no stream data
+}
+
 
 def compute_confidence(
     candidates: gpd.GeoDataFrame,
@@ -45,7 +53,7 @@ def compute_confidence(
             confidence -= deductions[flag]
             logger.info("Confidence deduction: %s (-%d)", flag, deductions[flag])
 
-    # Per-cell deductions
+    # Per-cell flags and deductions
     flags_col = []
     for idx, cell in candidates.iterrows():
         cell_flags = []
@@ -59,6 +67,11 @@ def compute_confidence(
         hydro_score = cell.get("score_hydro")
         if hydro_score is not None and hydro_score == 0:
             cell_flags.append(FLAG_HYDRO_LOW_CONFIDENCE)
+
+        # Apply per-cell deductions
+        for flag in cell_flags:
+            if flag in PER_CELL_DEDUCTIONS:
+                confidence.at[idx] -= PER_CELL_DEDUCTIONS[flag]
 
         flags_col.append("; ".join(cell_flags) if cell_flags else "")
 
