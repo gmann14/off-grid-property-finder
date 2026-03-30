@@ -70,3 +70,14 @@ def visualize(ctx: click.Context) -> None:
     cfg = ctx.obj["config"]
     logger = ctx.obj["logger"]
     run_visualize(cfg, logger)
+
+
+@cli.command()
+@click.pass_context
+def analyze(ctx: click.Context) -> None:
+    """Print score distribution statistics from scored output."""
+    from src.analyze import run_analyze
+
+    cfg = ctx.obj["config"]
+    logger = ctx.obj["logger"]
+    run_analyze(cfg, logger)
