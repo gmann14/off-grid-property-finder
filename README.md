@@ -76,6 +76,7 @@ python -m src ingest          # Convert raw → processed formats
 python -m src prepare         # Full data preparation pipeline
 python -m src score           # Score, rank, and export results
 python -m src visualize       # Generate interactive Folium map
+python -m src analyze         # Print score distribution statistics
 ```
 
 Options: `--config path/to/config.yaml`, `--log-level DEBUG|INFO|WARNING|ERROR`
@@ -150,6 +151,7 @@ src/
 ├── clip.py             # Raster/vector clipping
 ├── crs.py              # CRS utilities
 ├── check_data.py       # Data validation
+├── analyze.py          # Score distribution analysis
 ├── logging_config.py   # Logging setup
 └── scoring/            # Pluggable scorer registry
     ├── registry.py     # Scorer registration + weighted composite
@@ -175,7 +177,7 @@ tests/
 
 ```sh
 source .venv/bin/activate
-pytest                    # Run all 67 tests
+pytest                    # Run all 92 tests
 pytest -v                 # Verbose output
 pytest tests/test_grid.py # Run specific test file
 ```

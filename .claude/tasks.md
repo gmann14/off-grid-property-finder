@@ -4,12 +4,12 @@
 > Last updated: 2026-03-30
 
 ## Project State
-- **Stage:** M1 MVP COMPLETE — full scoring pipeline runs end-to-end
-- **GitHub:** gmann14/property-finder (1 commit pushed, massive uncommitted work)
+- **Stage:** M1 MVP COMPLETE + confidence fix + analyze command
+- **GitHub:** https://github.com/gmann14/off-grid-property-finder (8 commits, fully pushed)
 - **Stack:** Python 3.12, GDAL/Fiona/Rasterio/GeoPandas/WhiteboxTools, Click CLI
-- **Tests:** 67 passing across 16 test files
+- **Tests:** 92 passing across 18 test files
 - **Output:** ~40,000 scored cells, ~39,924 eligible, interactive Folium map generated
-- **Modules:** 27 source files in src/ + scoring/ subpackage (8 files)
+- **Modules:** 28 source files in src/ + scoring/ subpackage (8 files)
 
 ## Completed Milestones
 
@@ -36,10 +36,12 @@
 
 ## Known Issues
 
-### Scoring Calibration ⚠️ (PRIORITY)
-- Too many cells scoring 100/100 across multiple criteria — poor differentiation
-- All confidence bands show "medium" (60.0) — global deductions fire but per-cell variation is low
-- Needs investigation: threshold tuning, score distribution analysis, hydro scoring review
+### Scoring Calibration ⚠️ (PARTIALLY ADDRESSED)
+- Too many cells scoring 100/100 on buildable (100%) and solar (98%) — thresholds too generous
+- ~~All confidence bands show "medium" (60.0)~~ → FIXED: per-cell deductions now applied
+- Hydro is inverted: 80% of cells score 0 (most have no stream) — expected but means hydro only differentiates the ~20% with streams
+- `python -m src analyze` now available for distribution diagnostics
+- **Still needed:** Re-run `score` pipeline to regenerate output with confidence fix, then re-analyze
 
 ## Upcoming Milestones
 
@@ -68,9 +70,9 @@
 |----------|------|--------|-------------|
 | P0 | ~~Sync all documentation~~ | 1h | ✅ DONE — SPEC.md, README.md, BACKLOG.md, tasks.md updated |
 | P0 | ~~Commit M1 work~~ | 30m | ✅ DONE — systematic commits to git |
-| P1 | Score distribution analysis | 1-2h | Add a CLI command or script to print histograms/percentiles for each criterion score |
-| P1 | Threshold tuning | 2-3h | Based on distribution analysis, adjust constants.py thresholds to improve differentiation |
-| P1 | Confidence scoring review | 1h | Investigate why all cells get "medium" — check which deductions are firing |
+| P0 | ~~Create GitHub repo + push~~ | 10m | ✅ DONE — https://github.com/gmann14/off-grid-property-finder |
+| P1 | ~~Score distribution analysis~~ | 1-2h | ✅ DONE — `python -m src analyze` command added |
+| P1 | ~~Confidence scoring fix~~ | 1h | ✅ DONE — per-cell deductions now applied (access: -15, hydro: -10) |
 | P1 | Optional preference scorers | 2-3h | Implement D8: town proximity, water-body amenity, crown-land adjacency |
 | P1 | Per-record detail summary | 1-2h | E3: human-readable explanations for top-N candidates |
 | P2 | Performance profiling | 1-2h | Profile the pipeline, identify bottlenecks |
