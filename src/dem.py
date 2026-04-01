@@ -9,6 +9,19 @@ import rasterio
 logger = logging.getLogger("property_finder")
 
 
+def _compress_raster(path: Path, target_dtype: str | None = None) -> None:
+    """Re-write a raster in-place with LZW compression (and optional dtype cast)."""
+    with rasterio.open(path) as src:
+        if src.compression == rasterio.enums.Compression.lzw and target_dtype is None:
+            return
+        data = src.read()
+        meta = src.meta.copy()
+    dtype = target_dtype or meta["dtype"]
+    meta.update(compress="lzw", dtype=dtype)
+    with rasterio.open(path, "w", **meta) as dst:
+        dst.write(data.astype(dtype))
+
+
 def generate_slope(dem_path: Path, out_path: Path) -> Path:
     if out_path.exists():
         logger.debug("Slope raster exists, skipping: %s", out_path)
@@ -24,7 +37,7 @@ def generate_slope(dem_path: Path, out_path: Path) -> Path:
     slope_rad = np.arctan(np.sqrt(dx**2 + dy**2))
     slope_deg = np.degrees(slope_rad)
 
-    meta.update(dtype="float32", nodata=-9999)
+    meta.update(dtype="float32", nodata=-9999, compress="lzw")
     out_path.parent.mkdir(parents=True, exist_ok=True)
     with rasterio.open(out_path, "w", **meta) as dst:
         dst.write(slope_deg.astype(np.float32), 1)
@@ -51,7 +64,7 @@ def generate_aspect(dem_path: Path, out_path: Path) -> Path:
     flat_mask = (np.abs(dx) < 1e-10) & (np.abs(dy) < 1e-10)
     aspect = np.where(flat_mask, -1, aspect)
 
-    meta.update(dtype="float32", nodata=-9999)
+    meta.update(dtype="float32", nodata=-9999, compress="lzw")
     out_path.parent.mkdir(parents=True, exist_ok=True)
     with rasterio.open(out_path, "w", **meta) as dst:
         dst.write(aspect.astype(np.float32), 1)
@@ -84,6 +97,8 @@ def generate_flow_direction(dem_path: Path, out_path: Path) -> Path:
             logger.info("Filled DEM depressions: %s", filled_path)
 
         wbt.d8_pointer(filled_abs, out_abs)
+        _compress_raster(out_path)
+        _compress_raster(filled_path, target_dtype="float32")
         logger.info("Generated flow direction raster: %s", out_path)
 
     except ImportError:
@@ -125,6 +140,7 @@ def generate_flow_accumulation(dem_path: Path, out_path: Path) -> Path:
             wbt.d8_pointer(filled_abs, flow_dir_abs)
 
         wbt.d8_flow_accumulation(flow_dir_abs, out_abs, out_type="cells")
+        _compress_raster(out_path)
         logger.info("Generated flow accumulation raster: %s", out_path)
 
     except ImportError:

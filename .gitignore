@@ -42,12 +42,11 @@ data/processed/
 # Output files
 output/
 
-# Validation screenshots (ad-hoc debug images)
-*_after_fix.png
-*_zoomed_*.png
-
 # Playwright MCP
 .playwright-mcp/
+
+# Claude Code session files
+.claude/
 
 # IDE
 .vscode/

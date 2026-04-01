@@ -95,7 +95,7 @@ def build_buildability_mask(
     # are applied during scoring via zonal statistics.
 
     mask_path = slope_path.parent / "buildability_mask.tif"
-    meta.update(dtype="uint8", nodata=255)
+    meta.update(dtype="uint8", nodata=255, compress="lzw")
     with rasterio.open(mask_path, "w", **meta) as dst:
         dst.write(buildable, 1)
 

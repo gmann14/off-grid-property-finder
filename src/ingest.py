@@ -101,6 +101,7 @@ def ingest_dem(config: Config) -> Path | None:
             transform=out_transform,
         )
 
+    out_meta.update(compress="lzw")
     with rasterio.open(out_path, "w", **out_meta) as dst:
         dst.write(out_image)
 
