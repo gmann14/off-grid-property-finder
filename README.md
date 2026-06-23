@@ -34,9 +34,10 @@ pip install -e ".[dev]"
 # Place raw GIS data in data/raw/ (see Data section below)
 
 # Run the pipeline
-python -m src prepare   # Ingest, clip, generate DEM derivatives, build grid
-python -m src score     # Score cells, compute confidence, rank, export
-python -m src visualize # Generate interactive map
+python -m src prepare        # Ingest, clip, generate DEM derivatives, build grid
+python -m src ingest-parcels # (optional) ingest NSPRD parcels for PID output — Stage B
+python -m src score          # Score cells, compute confidence, rank, export (+ ranked PIDs)
+python -m src visualize      # Generate interactive map
 ```
 
 ## Scoring Criteria
@@ -45,13 +46,17 @@ Each eligible cell receives a weighted composite score (0-100):
 
 | Criterion | Weight | What it measures |
 |-----------|--------|------------------|
-| **Hydro** | 45% | Micro-hydro power potential from nearby streams (head x flow x efficiency) |
-| **Elevation** | 25% | Coastal flood resilience — sweet spot is 30-100m ASL for NS |
+| **Hydro** | 40% | Micro-hydro power potential from nearby streams (head x flow x efficiency). Drainage area from a validated flow-accumulation raster when available, else a segment-length proxy. |
 | **Access** | 20% | Distance to nearest road or civic address (not legal access) |
-| **Solar** | 5% | South-facing slope suitability for ground-mounted solar |
-| **Buildable** | 5% | Percentage of cell with slope <=20 degrees (usable for structures) |
+| **Open ground** | 15% | Flat, open, unbuilt, non-water land area — ground-mount solar room + building pad (small south-facing bonus) |
+| **Wind** | 15% | Wind resource (Global Wind Atlas raster) or terrain exposure (TPI ridge/hilltop) as a proxy |
+| **Elevation** | 10% | Coastal-flood penalty only — low/at-risk coastal land scores low; high, exposed ground is *not* penalized |
 
-Hydro dominates because it's the primary differentiator — solar works almost everywhere in NS, but micro-hydro potential varies dramatically by location. Weights are configurable in `config.yaml` and auto-renormalize when criteria are disabled.
+Hydro dominates because it's the scarce, hard-to-replicate differentiator and the best winter generator — solar works almost everywhere in NS, so it's a weak land-selection signal. Weights are configurable in `config.yaml` and auto-renormalize when criteria are disabled. The older `solar` and `buildable` criteria remain registered (and unit-tested) but are off by default — they were near-constant in NS and are superseded by `open_ground`.
+
+### Composite vs. all-rounder
+
+Each cell gets two scores: the weighted **composite** `score` (compensatory — a strong hydro site can rank high on its own), and `score_allrounder`, a weighted **geometric mean** of the sub-scores. The all-rounder drops sharply if *any* criterion is weak, so it surfaces true do-it-all "perfect candidate" parcels rather than one-trick sites. A `wind_worth_it` flag marks cells with real wind resource *and* limited room for more solar.
 
 ### Hard Exclusions
 
@@ -74,13 +79,14 @@ Each cell gets a confidence score (0-100) and band (high/medium/low). Starts at 
 ## CLI Commands
 
 ```sh
-python -m src --help          # Show all commands
-python -m src check-data      # Verify raw data files are present and readable
-python -m src ingest          # Convert raw -> processed formats
-python -m src prepare         # Full data preparation pipeline
-python -m src score           # Score, rank, and export results
-python -m src visualize       # Generate interactive Folium map
-python -m src analyze         # Print score distribution statistics
+python -m src --help            # Show all commands
+python -m src check-data        # Verify raw data files are present and readable
+python -m src ingest            # Convert raw -> processed formats
+python -m src ingest-parcels    # Ingest NSPRD parcels with PID (add --from-rest to pull from the NSPRD service)
+python -m src prepare           # Full data preparation pipeline
+python -m src score             # Score, rank, and export results (+ ranked PIDs if parcels present)
+python -m src visualize         # Generate interactive Folium map
+python -m src analyze           # Print score distribution statistics
 ```
 
 Options: `--config path/to/config.yaml`, `--log-level DEBUG|INFO|WARNING|ERROR`
@@ -109,7 +115,7 @@ Place raw data in `data/raw/` subdirectories:
 | `land-cover/` | Land cover polygons (Shapefile) | [NSTDB](https://nsgi.novascotia.ca/WSF_DDS/DDS.svc/DownloadFile?tkey=fhrTtdnDvfytwLz6&id=13) | Yes |
 | `exclusions/` | Protected areas, flood zones | [GeoNova](https://geonova.novascotia.ca/geodata/) | Recommended |
 | `crown-land/` | Crown land parcels (Shapefile) | [NS Open Data](https://data.novascotia.ca/Lands-Forests-and-Wildlife/Crown-Land/3nka-59nz) | Optional |
-| `parcels/` | Property parcels (Shapefile) | NSGI (account required) | Stage B only |
+| `parcels/` | Property parcels with PID (NSPRD) | [GeoNOVA](https://geonova.novascotia.ca/nova-scotia-property-records-parcels) (free, no account) or `ingest-parcels --from-rest` | Stage B (PIDs) |
 
 Raw data files are not committed to the repo. The processed files in `data/processed/` contain everything the pipeline needs for scoring. To re-ingest from scratch (e.g., to change the study area), re-download the raw files from the links above and run `python -m src prepare`.
 
@@ -133,7 +139,9 @@ All output goes to `output/`:
 | `scored_cells.csv` | All cells with lat/lon, scores, confidence |
 | `scored_cells.geojson` | GeoJSON in WGS84 for web mapping |
 | `ranked_eligible.csv` | Eligible cells only, sorted by rank |
-| `map.html` | Interactive Folium map with color-coded cells |
+| `ranked_parcels.csv` | **PID candidate list** — scored parcels sorted best-first (Stage B; only when parcel data is present) |
+| `scored_parcels.gpkg` / `.geojson` | Parcels with aggregated scores and geometry (Stage B) |
+| `map.html` | Interactive Folium map with color-coded cells (+ a "Scored Parcels (PID)" layer when available) |
 
 Each record includes: `score`, `status`, `exclusion_reasons`, `confidence_score`, `confidence_band`, and `flags`.
 
@@ -183,7 +191,7 @@ tests/
 
 ```sh
 source .venv/bin/activate
-pytest                    # Run all 92 tests
+pytest                    # Run all 104 tests
 pytest -v                 # Verbose output
 pytest tests/test_grid.py # Run specific test file
 ```
@@ -198,10 +206,10 @@ pytest tests/test_grid.py # Run specific test file
 
 ## Roadmap
 
-- **Stage A (current)**: Candidate-cell scoring MVP — complete and functional
-- **Stage B**: Parcel-aware pipeline — join cell scores to authoritative property parcels
+- **Stage A**: Candidate-cell scoring MVP — complete and functional
+- **Stage B (implemented)**: Parcel-aware pipeline — joins cell scores to authoritative NSPRD parcels and emits a **PID-ranked candidate list** (`ranked_parcels.csv`). Drop NSPRD parcels into `data/raw/parcels/` (or run `ingest-parcels --from-rest`), then `score`.
 - **Calibration**: Validate scores against known sites, tune thresholds
-- **Future**: HYDAT-based flow regression, LiDAR refinement, web dashboard, multi-province support
+- **Future**: dedicated wind criterion (Global Wind Atlas), HYDAT-based flow regression, LiDAR refinement, web dashboard, multi-province support
 
 ## Documentation
 

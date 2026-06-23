@@ -130,12 +130,15 @@ def sample_exclusion_zones(tmp_path):
 
 @pytest.fixture
 def sample_parcels(tmp_path):
-    """Create 4 large parcels covering the study area."""
+    """Create 4 large parcels covering the study area, keyed by PID/AAN."""
     xmin, ymin, xmax, ymax = BBOX
     mid_x = (xmin + xmax) / 2
     mid_y = (ymin + ymax) / 2
     parcels = gpd.GeoDataFrame(
-        {"parcel_id": [1, 2, 3, 4]},
+        {
+            "PID": ["60010001", "60010002", "60010003", "60010004"],
+            "AAN": ["01000001", "01000002", "01000003", "01000004"],
+        },
         geometry=[
             box(xmin, ymin, mid_x, mid_y),
             box(mid_x, ymin, xmax, mid_y),

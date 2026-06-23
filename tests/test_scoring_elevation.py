@@ -8,15 +8,20 @@ from src.constants import ELEVATION_THRESHOLDS
 
 
 def test_lookup_score_in_range():
-    assert _lookup_score(50, ELEVATION_THRESHOLDS) == 100   # 30-100 sweet spot
-    assert _lookup_score(150, ELEVATION_THRESHOLDS) == 90   # 100-200 band
-    assert _lookup_score(5, ELEVATION_THRESHOLDS) == 10     # 0-10 coastal floodplain
+    # Redesign: elevation is now a coastal-flood penalty only.
+    assert _lookup_score(50, ELEVATION_THRESHOLDS) == 100   # safe above surge
+    assert _lookup_score(15, ELEVATION_THRESHOLDS) == 70    # marginal low coastal
+    assert _lookup_score(7, ELEVATION_THRESHOLDS) == 40     # low coastal, real risk
+    assert _lookup_score(3, ELEVATION_THRESHOLDS) == 10     # tidal/surge zone
 
 
-def test_lookup_score_boundaries():
-    assert _lookup_score(100, ELEVATION_THRESHOLDS) == 90   # exactly at 100 → 100-200 band
-    assert _lookup_score(300, ELEVATION_THRESHOLDS) == 30   # 300+ band
-    assert _lookup_score(30, ELEVATION_THRESHOLDS) == 100   # sweet spot start
+def test_high_ground_no_longer_penalized():
+    # The whole point of the redesign: high, exposed ground (good for wind)
+    # must score full marks, not be penalized like the old table did.
+    assert _lookup_score(150, ELEVATION_THRESHOLDS) == 100
+    assert _lookup_score(300, ELEVATION_THRESHOLDS) == 100
+    assert _lookup_score(20, ELEVATION_THRESHOLDS) == 100   # boundary: safe start
+    assert _lookup_score(-1, ELEVATION_THRESHOLDS) == 0     # below sea level
 
 
 def test_score_elevation_with_fixture(small_grid, config_with_paths):

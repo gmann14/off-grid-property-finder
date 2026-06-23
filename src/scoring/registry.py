@@ -4,8 +4,10 @@ import logging
 from typing import Callable
 
 import geopandas as gpd
+import numpy as np
 
 from src.config import Config
+from src.constants import WIND_WORTH_IT_OPEN_GROUND_MAX, WIND_WORTH_IT_WIND_MIN
 
 logger = logging.getLogger("property_finder")
 
@@ -56,7 +58,7 @@ def compute_composite_score(
             logger.exception("Scorer '%s' failed; assigning 0", name)
             candidates[col] = 0.0
 
-    # Compute weighted composite
+    # Compute weighted composite (compensatory — strengths offset weaknesses)
     score_cols = [f"score_{name}" for name in weights]
     weight_values = [weights[name] / 100.0 for name in weights]
 
@@ -65,10 +67,29 @@ def compute_composite_score(
     )
     candidates["score"] = composite
 
+    # All-rounder (conjunctive) score: weighted geometric mean of the sub-scores.
+    # Unlike the composite, a single weak criterion drags this down hard — use it
+    # to hunt true do-it-all "perfect candidate" parcels rather than one-trick sites.
+    total_w = sum(weight_values) or 1.0
+    ln_sum = sum(
+        w * np.log(candidates[col].clip(lower=1.0))
+        for col, w in zip(score_cols, weight_values)
+    )
+    candidates["score_allrounder"] = np.exp(ln_sum / total_w)
+
+    # "Wind worth it here": meaningful wind resource AND limited room for more
+    # solar (your logic — wind only pays off when solar can't cover the gap).
+    if "score_wind" in candidates.columns and "score_open_ground" in candidates.columns:
+        candidates["wind_worth_it"] = (
+            (candidates["score_wind"] >= WIND_WORTH_IT_WIND_MIN)
+            & (candidates["score_open_ground"] <= WIND_WORTH_IT_OPEN_GROUND_MAX)
+        )
+
     # Null out excluded cells
     excluded = candidates.get("status") == "excluded"
     if excluded is not None and excluded.any():
         candidates.loc[excluded, "score"] = None
+        candidates.loc[excluded, "score_allrounder"] = None
         for col in score_cols:
             candidates.loc[excluded, col] = None
 

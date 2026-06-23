@@ -25,17 +25,17 @@ SOLAR_PERCENT_THRESHOLDS = [
     (0, 5, 20),
 ]
 
-# Elevation thresholds — tuned for coastal NS off-grid resilience.
-# Moderate inland elevation is ideal (flood/storm/sea-level-rise buffer).
-# Very low coastal land is risky; very high is remote and exposed.
+# Elevation thresholds — a COASTAL-FLOOD PENALTY, not a positive criterion.
+# Redesign note: the old table rewarded mid elevation (30-100m) and penalized
+# high ground (300m+). That fought the wind goal (turbines want exposed high
+# ground). Now elevation only penalizes genuinely low/at-risk coastal land;
+# everything safely above storm-surge scores full marks (high ground is fine).
 ELEVATION_THRESHOLDS = [
-    (30, 100, 100),              # Sweet spot: well above sea level, not too remote
-    (100, 200, 90),              # Higher inland — solid
-    (20, 30, 70),                # Above immediate flood risk
-    (200, 300, 60),              # Getting remote/exposed
-    (10, 20, 40),                # Low coastal — some flood risk
-    (300, float("inf"), 30),     # Very high — exposed, remote
-    (0, 10, 10),                 # Coastal floodplain — significant risk
+    (20, float("inf"), 100),     # Safe from coastal flooding (incl. high, exposed ground)
+    (10, 20, 70),                # Marginal — low coastal
+    (5, 10, 40),                 # Low coastal — real flood/surge risk
+    (0, 5, 10),                  # Tidal / storm-surge zone
+    # below 0 (at/below sea level) falls through to default score 0
 ]
 
 ACCESS_DISTANCE_THRESHOLDS = [
@@ -55,25 +55,81 @@ BUILDABLE_PERCENT_THRESHOLDS = [
 ]
 
 PARCEL_SIZE_THRESHOLDS = [
-    (50, float("inf"), 100),
-    (20, 50, 90),
-    (10, 20, 70),
+    (100, float("inf"), 100),    # 100+ acres — room for everything + severance
+    (50, 100, 92),
+    (20, 50, 80),
+    (10, 20, 60),
     (5, 10, 40),
     (2, 5, 20),
     (1, 2, 5),
 ]
 
-# Default scoring weights (Stage A only, sum to 100)
-# Hydro is the primary differentiator for off-grid NS — solar works almost
-# everywhere but winter needs a secondary power source.  Elevation reflects
-# coastal-flood / sea-level-rise resilience.  Solar and buildable are near-
-# uniform across the study area so carry minimal weight.
+# --- Open-ground capacity (merged solar + buildable) -----------------------
+# For NS, PV yield is near-uniform (~1090 kWh/kWp), so usable solar potential is
+# overwhelmingly about how much flat, open, unbuilt, non-water land a site has —
+# not aspect. This replaces the old (saturated, aspect-based) solar criterion
+# and the (constant-100) buildable criterion with one area-based metric.
+OPEN_GROUND_PERCENT_THRESHOLDS = [
+    (30, float("inf"), 100),     # >=30% of cell open & buildable: ample ground-mount + building room
+    (20, 30, 85),
+    (10, 20, 65),
+    (5, 10, 40),
+    (2, 5, 20),
+    (0, 2, 0),
+]
+# Small bonus (added, capped at 100) when a good share of the open ground also
+# faces south — nice-to-have for ground-mount, not decisive.
+OPEN_GROUND_SOUTH_BONUS = 10
+OPEN_GROUND_SOUTH_FRACTION = 0.25  # >=25% south-facing to earn the bonus
+
+# --- Wind + terrain exposure -----------------------------------------------
+# Wind is a BONUS/winter-redundancy play, not a core driver (solar covers most
+# needs in NS). Scored from a Global Wind Atlas raster when present, else from
+# terrain exposure (TPI) as a lower-confidence proxy.
+# Mean wind speed (m/s) at ~100m hub height (Global Wind Atlas):
+WIND_SPEED_THRESHOLDS = [
+    (8.5, float("inf"), 100),
+    (7.5, 8.5, 85),
+    (6.5, 7.5, 65),
+    (5.5, 6.5, 40),
+    (0, 5.5, 15),
+]
+# Topographic Position Index (m): cell mean elevation minus surrounding-area
+# mean. Positive = ridge/hilltop (exposed, windy); negative = valley (sheltered).
+EXPOSURE_TPI_THRESHOLDS = [
+    (15, float("inf"), 100),
+    (7, 15, 80),
+    (2, 7, 60),
+    (-2, 2, 40),
+    (float("-inf"), -2, 15),
+]
+EXPOSURE_RADIUS_M = 1000  # neighbourhood radius for TPI
+
+# "Wind worth it here" flag: meaningful wind resource AND limited room to just
+# add more solar instead (your own logic — wind only pays off when solar can't).
+WIND_WORTH_IT_WIND_MIN = 65       # wind score at/above this
+WIND_WORTH_IT_OPEN_GROUND_MAX = 40  # open-ground score at/below this
+
+# --- Hydro flow-accumulation validity gate ---------------------------------
+# A D8 flow-accumulation raster over flat coastal terrain can silently fail
+# (flow never propagates). Only trust it when its max upstream-cell count is
+# plausibly river-scale; otherwise fall back to the segment-length proxy and
+# report low hydro confidence honestly.
+FLOW_ACCUM_MIN_VALID_CELLS = 10000
+
+# Default scoring weights (sum to 100 over enabled criteria).
+# Redesign rationale: hydro is the scarce, hard-to-replicate differentiator and
+# best winter generator, so it leads. open_ground (solar room + buildability)
+# and access are practicality gates. wind is a conditional winter-redundancy
+# bonus. elevation is now only a low-coastal flood penalty (see thresholds).
+# The old solar (5) + buildable (5) criteria were near-constant in NS and are
+# replaced by open_ground; they remain registered but are off by default.
 DEFAULT_WEIGHTS = {
-    "hydro": 45,
-    "elevation": 25,
+    "hydro": 40,
     "access": 20,
-    "solar": 5,
-    "buildable": 5,
+    "open_ground": 15,
+    "wind": 15,
+    "elevation": 10,
 }
 
 # Confidence deductions
@@ -83,6 +139,7 @@ CONFIDENCE_DEDUCTIONS = {
     "hydro_20m_dem": 15,
     "incomplete_land_cover_mask": 10,
     "no_road_evidence_200m": 15,
+    "wind_proxy_only": 10,  # wind from terrain exposure, not a wind-resource raster
 }
 
 # Confidence bands
@@ -98,6 +155,8 @@ FLAG_COASTAL_LOW_ELEVATION = "coastal_low_elevation"
 FLAG_HYDRO_LOW_CONFIDENCE = "hydro_low_confidence"
 FLAG_SOLAR_LOW_CONFIDENCE = "solar_low_confidence"
 FLAG_PARCEL_NO_CANDIDATES = "parcel_no_assigned_candidates"
+FLAG_WIND_PROXY_ONLY = "wind_exposure_proxy_only"  # no wind raster; TPI used
+FLAG_WIND_WORTH_IT = "wind_worth_it"  # good wind + limited solar room
 
 # Access flag threshold — scores below this trigger the flag
 ACCESS_FLAG_THRESHOLD = 50
@@ -126,3 +185,46 @@ SOLAR_FLAT_SLOPE = 5  # Below this is considered flat
 
 # Exclusion defaults
 DEFAULT_EXCLUSION_OVERLAP_THRESHOLD = 0.5  # 50% overlap triggers exclusion
+
+# --- Parcel / PID integration (Stage B) ------------------------------------
+# NS Property Records Database (NSPRD) parcels are public — both a GeoNOVA
+# vector download and this ArcGIS REST MapServer (limited attribution incl.
+# PID). No NSGI account is required for the boundary + PID layer.
+# The parcel polygon layer id can vary; check the service catalog and override
+# via config if the default returns no polygon features.
+NSPRD_PARCEL_SERVICE = (
+    "https://gis7.nsgc.gov.ns.ca/arcgis/rest/services/ISD_GIS/Property/MapServer"
+)
+NSPRD_PARCEL_LAYER_ID = 0
+NSPRD_PAGE_SIZE = 1000  # records per REST query page
+
+# Source field names that should normalize to canonical PID / AAN columns.
+# NSPRD exposes "PID"; variants cover other NSGI/PVSC extracts and aggregators.
+PARCEL_PID_FIELDS = ("PID", "PID_NUMBER", "PIDNUMBER", "PID_NUM", "PROPERTY_ID")
+PARCEL_AAN_FIELDS = (
+    "AAN", "ASSESS_NO", "ASSESS_ACCT", "ACCT_NUM",
+    "ASSESSMENT_ACCOUNT_NUMBER", "TARGET_AAN",
+)
+
+# Parcel aggregation defaults (Stage B)
+# cell_weight lowered from 0.8 -> 0.65 so acreage (a stated top priority, and
+# the basis for severance/privacy/solar-room) pulls harder on parcel ranking.
+PARCEL_TOP_N_CELLS = 3      # parcel score = mean of top-N eligible cell scores
+PARCEL_CELL_WEIGHT = 0.65   # weight on cell score vs. parcel-size score
+
+# Parcel typing (Stage B) — land-only vs developed, and severance candidates.
+PARCEL_TYPE_LAND_ONLY = "land_only"        # no buildings
+PARCEL_TYPE_LIGHTLY_BUILT = "lightly_built"  # 1-2 buildings
+PARCEL_TYPE_DEVELOPED = "developed"        # 3+ buildings
+PARCEL_LIGHT_MAX_BUILDINGS = 2             # <= this (and >0) = lightly built
+# A severance candidate: a developed/lightly-built parcel big enough that the
+# resource-bearing land could plausibly be split off and sold/approached.
+SEVERANCE_MIN_ACRES = 40.0
+SEVERANCE_MAX_BUILDINGS = 3
+SEVERANCE_MIN_CELL_SCORE = 50.0
+FLAG_SEVERANCE_CANDIDATE = "severance_candidate"
+
+# Sea-level exclusion for the buildability mask: DEM pixels at/below this
+# elevation (m) are treated as water/ocean and not buildable. A cheap coastline
+# proxy when no waterbody polygon layer is available.
+SEA_LEVEL_M = 0.0

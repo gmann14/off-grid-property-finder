@@ -15,22 +15,25 @@ paths:
   processed: data/processed
   output: output
 
-# Stage A scoring weights (must sum to 100 for enabled criteria)
-# Hydro is the primary differentiator — solar works everywhere in NS
-# but winter needs secondary power. Elevation = coastal flood resilience.
+# Scoring weights (must sum to 100 for enabled criteria).
+# hydro = scarce, hard-to-replicate differentiator + best winter generator.
+# open_ground = solar room + buildability (area-based; replaces old solar+buildable).
+# access = road/civic proximity (practicality gate).
+# wind = conditional winter-redundancy bonus (GWA raster or terrain-exposure proxy).
+# elevation = coastal-flood penalty only (no longer penalizes high/exposed ground).
 weights:
-  hydro: 45
-  elevation: 25
+  hydro: 40
   access: 20
-  solar: 5
-  buildable: 5
+  open_ground: 15
+  wind: 15
+  elevation: 10
 
 enabled_criteria:
   - hydro
-  - solar
-  - elevation
   - access
-  - buildable
+  - open_ground
+  - wind
+  - elevation
 
 # Confidence deductions (subtracted from 100)
 confidence_deductions:
@@ -39,6 +42,7 @@ confidence_deductions:
   hydro_20m_dem: 15
   incomplete_land_cover_mask: 10
   no_road_evidence_200m: 15
+  wind_proxy_only: 10
 
 # Exclusion settings
 exclusion_overlap_threshold: 0.5  # 50% overlap triggers hard exclusion
@@ -46,5 +50,9 @@ exclusion_overlap_threshold: 0.5  # 50% overlap triggers hard exclusion
 # Parcel settings (Stage B)
 min_parcel_area_acres: 1.0
 
-# Optional preference criteria (disabled by default, weight 0)
-preferences: {}
+# Optional preference criteria
+# parcel_aggregation: tune how cell scores roll up to parcels (Stage B)
+preferences:
+  parcel_aggregation:
+    top_n: 3          # parcel score = mean of top-N eligible cell scores
+    cell_weight: 0.65  # weight on cell score vs. parcel-size (acreage) score

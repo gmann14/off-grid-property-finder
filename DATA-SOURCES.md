@@ -159,16 +159,16 @@ Not a data source per se — we derive this from the DEM:
 
 ## 5. Property / Parcel Data
 
-### 5.1 NSGI Property Parcels (via GeoNova) ⚠️ KEY CONSTRAINT
+### 5.1 NS Property Records Parcels (NSPRD) ✅ PUBLIC — used by Stage B
 
-- **Source:** Nova Scotia Geomatics Infrastructure (NSGI)
-- **URL:** https://nsgi.novascotia.ca/gdd/ (DataLocator)
-- **Access:** Requires free NSGI account registration
-- **Format:** Shapefile/GDB (via DataLocator download)
+- **Source:** Nova Scotia Property Records Database (NSPRD), via GeoNOVA / NSGI
+- **Download (GeoNOVA):** https://geonova.novascotia.ca/nova-scotia-property-records-parcels — vector file of parcel boundaries **keyed by PID**
+- **ArcGIS REST:** https://gis7.nsgc.gov.ns.ca/arcgis/rest/services/ISD_GIS/Property/MapServer — public MapServer serving NSPRD boundaries + **PID** with limited attribution; queryable by bbox (`/<layer>/query?f=geojson&...`)
+- **Format:** Shapefile/GDB/GeoJSON download, or ArcGIS REST query → GeoJSON
 - **Coverage:** All of Nova Scotia (cadastral data)
-- **Cost:** Account required; basic access is free. Some datasets may have license restrictions.
-- **Notes:** This is the authoritative source for NS property parcel boundaries. The "Planning" theme on GeoNova includes cadastral/parcel data. Must register for an account to access. If bulk access is blocked, do parcel-independent scoring first and join to parcels later.
-- **ArcGIS Services:** Various NSGI ArcGIS REST services may expose parcel layers.
+- **Cost:** Free. **No account required** for the boundary + PID layer (the earlier "DataLocator account required" assumption applied to richer cadastral attribution, not the public PID boundary layer).
+- **Used by:** `python -m src ingest-parcels` (reads `data/raw/parcels/`) or `ingest-parcels --from-rest` (pulls the bbox from the REST service). PID/AAN are normalized to canonical columns; see `src/ingest.py::ingest_parcels`.
+- **Caveat:** the REST service is geofenced/rate-limited and may be unreachable from some networks/CI — prefer the GeoNOVA download for reproducible runs. The parcel polygon layer id may vary; override via the service catalog if the default returns no polygons.
 
 ### 5.2 NS Property Online
 
@@ -219,6 +219,8 @@ Not a data source per se — we derive this from the DEM:
 **Do not use OSM as a parcel substitute.** OSM landuse polygons (available from the [Geofabrik NS extract](https://download.geofabrik.de/north-america/canada/nova-scotia-latest.osm.pbf)) are inconsistent, non-authoritative, and unsuitable for parcel-level scoring. Use OSM for roads and contextual landuse only.
 
 **Fallback if parcel data is blocked:** Generate a fixed `250m × 250m` square candidate grid across the rural study area, score those cells first, and join to parcels later when boundaries become available. This avoids pretending that non-parcel polygons are parcels and keeps runtime predictable. See IMPLEMENTATION-BACKLOG.md task B3 for the decision gate.
+
+**Update (Stage B implemented):** parcel access is **not** blocked — the NSPRD public layer (§5.1) provides PID-keyed boundaries with no account. The grid-first design is retained as the foundation; `score` now joins cell scores to parcels by centroid containment and emits a PID-ranked `output/ranked_parcels.csv`. PVSC (§5.3) AAN remains the cross-validation key for a chosen PID.
 
 ---
 

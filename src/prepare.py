@@ -9,7 +9,12 @@ import logging
 from pathlib import Path
 
 from src.config import Config
-from src.dem import generate_aspect, generate_flow_accumulation, generate_slope
+from src.dem import (
+    generate_aspect,
+    generate_exposure,
+    generate_flow_accumulation,
+    generate_slope,
+)
 from src.grid import filter_by_rural_mask, generate_candidate_grid
 from src.ingest import run_ingest
 from src.mask import build_buildability_mask, build_rural_mask
@@ -33,6 +38,7 @@ def run_prepare(config: Config, logger: logging.Logger) -> None:
     if dem_path and dem_path.exists():
         generate_slope(dem_path, processed / "slope.tif")
         generate_aspect(dem_path, processed / "aspect.tif")
+        generate_exposure(dem_path, processed / "exposure.tif")
         generate_flow_accumulation(dem_path, processed / "flow_accumulation.tif")
     else:
         logger.warning("No DEM available; skipping derivative generation")
@@ -50,13 +56,20 @@ def run_prepare(config: Config, logger: logging.Logger) -> None:
         working_crs=config.working_crs,
     )
 
+    streams_path = processed / "streams.gpkg"
+    dem_path_p = processed / "dem.tif"
+    waterbodies_path = processed / "waterbodies.gpkg"
+    from src.constants import SEA_LEVEL_M
     build_buildability_mask(
         slope_path=slope_path if slope_path.exists() else None,
         land_cover_path=land_cover_path,
-        water_path=None,
+        water_path=streams_path if streams_path.exists() else None,
         buildings_path=buildings_path,
         study_bbox=bbox,
         working_crs=config.working_crs,
+        dem_path=dem_path_p if dem_path_p.exists() else None,
+        sea_level_m=SEA_LEVEL_M,
+        waterbodies_path=waterbodies_path if waterbodies_path.exists() else None,
     )
 
     # Phase 4: Generate candidate grid

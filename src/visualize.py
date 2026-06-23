@@ -405,6 +405,53 @@ def _add_buildings(m, buildings_path: Path):
     logger.info("Added %d building markers to map", len(buildings))
 
 
+def _add_parcels(m, parcels_path: Path):
+    """Add scored parcels (Stage B) colored by parcel score, PID in tooltip."""
+    import folium
+
+    parcels = gpd.read_file(parcels_path)
+    parcels = parcels.to_crs("EPSG:4326")
+    parcels.geometry = parcels.geometry.simplify(tolerance=0.00002)
+
+    keep = [c for c in ["geometry", "PID", "AAN", "score", "rank",
+                        "cell_score", "n_cells", "area_acres",
+                        "parcel_type", "n_buildings", "severance_candidate"]
+            if c in parcels.columns]
+    parcels = parcels[keep]
+
+    parcel_group = folium.FeatureGroup(name="Scored Parcels (PID)", show=False)
+    geojson = json.loads(parcels.to_json())
+    _truncate_coords(geojson, precision=5)
+
+    def parcel_style(feature):
+        score = feature["properties"].get("score")
+        return {
+            "fillColor": _score_color(score),
+            "color": "#333333",
+            "weight": 0.6,
+            "fillOpacity": _score_opacity(score) if score is not None else 0.05,
+        }
+
+    fields = [c for c in ["PID", "score", "rank", "cell_score", "n_cells",
+                          "area_acres", "parcel_type", "n_buildings"]
+              if c in parcels.columns]
+    aliases = {"PID": "PID", "score": "Parcel score", "rank": "Rank",
+               "cell_score": "Cell score", "n_cells": "Cells", "area_acres": "Acres",
+               "parcel_type": "Type", "n_buildings": "Buildings"}
+
+    folium.GeoJson(
+        geojson,
+        style_function=parcel_style,
+        tooltip=folium.GeoJsonTooltip(
+            fields=fields,
+            aliases=[aliases.get(f, f) for f in fields],
+            localize=True,
+        ) if fields else None,
+    ).add_to(parcel_group)
+    parcel_group.add_to(m)
+    logger.info("Added %d scored parcels to map", len(parcels))
+
+
 def run_visualize(config: Config, logger: logging.Logger) -> None:
     """Generate an interactive Folium map from scored output."""
     try:
@@ -480,9 +527,9 @@ def run_visualize(config: Config, logger: logging.Logger) -> None:
     ]
 
     # Columns to include in GeoJSON (drop heavy/unnecessary ones)
-    keep_cols = ["geometry", "status", "score", "rank", "score_hydro",
-                 "score_solar", "score_elevation", "score_access",
-                 "score_buildable", "confidence", "confidence_band"]
+    keep_cols = ["geometry", "status", "score", "score_allrounder", "rank",
+                 "score_hydro", "score_access", "score_open_ground", "score_wind",
+                 "score_elevation", "wind_worth_it", "confidence", "confidence_band"]
     keep_cols = [c for c in keep_cols if c in candidates_wgs.columns]
 
     for band_name, pred, show in band_defs:
@@ -540,6 +587,10 @@ def run_visualize(config: Config, logger: logging.Logger) -> None:
     if buildings_path.exists():
         _add_buildings(m, buildings_path)
 
+    parcels_path = output / "scored_parcels.gpkg"
+    if parcels_path.exists():
+        _add_parcels(m, parcels_path)
+
     dem_path = processed / "dem.tif"
     if dem_path.exists():
         _add_contours(m, dem_path, processed)
@@ -578,6 +629,7 @@ def run_visualize(config: Config, logger: logging.Logger) -> None:
         <i style="background:#9467bd;opacity:0.4;width:16px;height:16px;display:inline-block;margin:3px 6px 0 0;vertical-align:middle;border:1px solid #7b4ea3;"></i> Crown Land<br>
         <i style="background:#d73027;opacity:0.3;width:16px;height:16px;display:inline-block;margin:3px 6px 0 0;vertical-align:middle;border:1px dashed #d73027;"></i> Protected Areas<br>
         <i style="background:#555;width:16px;height:16px;display:inline-block;margin:3px 6px 0 0;vertical-align:middle;border:1px solid #333;"></i> Buildings<br>
+        <i style="background:#1a9641;opacity:0.5;width:16px;height:16px;display:inline-block;margin:3px 6px 0 0;vertical-align:middle;border:1px solid #333;"></i> Scored Parcels (PID, by score)<br>
         <span style="color:#6B4226;">&#9473;&#9473;</span> Elevation Contours (50m)<br>
         <br>
         <span style="font-size: 11px; color: #666;">
@@ -613,13 +665,8 @@ def run_visualize(config: Config, logger: logging.Logger) -> None:
         <table style="width:100%; border-collapse:collapse; font-size: 12.5px;">
             <tr style="border-bottom:1px solid #eee;">
                 <td style="padding:4px 0;"><b style="color:#2166ac;">Micro-Hydro</b></td>
-                <td style="padding:4px 8px; text-align:right; white-space:nowrap;"><b>45%</b></td>
-                <td style="padding:4px 0; color:#555;">Nearby stream, flow rate, head</td>
-            </tr>
-            <tr style="border-bottom:1px solid #eee;">
-                <td style="padding:4px 0;"><b style="color:#6B4226;">Elevation</b></td>
-                <td style="padding:4px 8px; text-align:right;"><b>25%</b></td>
-                <td style="padding:4px 0; color:#555;">30&ndash;100m ideal; coastal flood risk</td>
+                <td style="padding:4px 8px; text-align:right; white-space:nowrap;"><b>40%</b></td>
+                <td style="padding:4px 0; color:#555;">Nearby stream, flow (drainage), head</td>
             </tr>
             <tr style="border-bottom:1px solid #eee;">
                 <td style="padding:4px 0;"><b style="color:#e31a1c;">Access</b></td>
@@ -627,19 +674,25 @@ def run_visualize(config: Config, logger: logging.Logger) -> None:
                 <td style="padding:4px 0; color:#555;">Distance to nearest road</td>
             </tr>
             <tr style="border-bottom:1px solid #eee;">
-                <td style="padding:4px 0;"><b style="color:#f4a020;">Solar</b></td>
-                <td style="padding:4px 8px; text-align:right;"><b>5%</b></td>
-                <td style="padding:4px 0; color:#555;">South-facing slopes, flat terrain</td>
+                <td style="padding:4px 0;"><b style="color:#4a9e4a;">Open ground</b></td>
+                <td style="padding:4px 8px; text-align:right;"><b>15%</b></td>
+                <td style="padding:4px 0; color:#555;">Flat, open, unbuilt land (solar room)</td>
+            </tr>
+            <tr style="border-bottom:1px solid #eee;">
+                <td style="padding:4px 0;"><b style="color:#7e57c2;">Wind</b></td>
+                <td style="padding:4px 8px; text-align:right;"><b>15%</b></td>
+                <td style="padding:4px 0; color:#555;">Wind resource / ridge exposure</td>
             </tr>
             <tr>
-                <td style="padding:4px 0;"><b style="color:#4a9e4a;">Buildable</b></td>
-                <td style="padding:4px 8px; text-align:right;"><b>5%</b></td>
-                <td style="padding:4px 0; color:#555;">Buildable land area</td>
+                <td style="padding:4px 0;"><b style="color:#6B4226;">Elevation</b></td>
+                <td style="padding:4px 8px; text-align:right;"><b>10%</b></td>
+                <td style="padding:4px 0; color:#555;">Coastal-flood penalty (low ground)</td>
             </tr>
         </table>
         <hr style="margin: 6px 0;">
         <span style="font-size: 11px; color: #888;">
-            Each criterion scores 0&ndash;100, then weighted.<br>
+            Composite (shown) = weighted sum. An "all-rounder" geometric-mean<br>
+            score is also exported for true do-it-all parcels.<br>
             Cells in protected areas or flood zones are excluded.
         </span>
     </div>

@@ -46,21 +46,21 @@ Exit criteria:
 - ✅ Runtime is acceptable for the target study area
 - ✅ 92 tests passing across 15 test files
 
-### M2: Parcel-Aware Pipeline 🔴 BLOCKED
+### M2: Parcel-Aware Pipeline 🟢 IMPLEMENTED (pending real-data run)
 
 Outcome:
-- Join candidate scores to authoritative parcels when available
-- Add parcel size and parcel-level reporting
+- Join candidate scores to authoritative parcels when available ✅
+- Add parcel size and parcel-level reporting ✅ (PID-ranked `output/ranked_parcels.csv`)
 
 Exit criteria:
-- Parcel-level output exists and preserves underlying score/confidence/flag context
-- Parcel aggregation logic is deterministic and documented
-- Parcel aggregation uses the mean of the top 3 eligible candidate-cell scores whose centroids fall within the parcel
+- Parcel-level output exists and preserves underlying score/confidence/flag context ✅
+- Parcel aggregation logic is deterministic and documented ✅
+- Parcel aggregation uses the mean of the top 3 eligible candidate-cell scores whose centroids fall within the parcel ✅
 
-**Blocker:** NSGI DataLocator account not yet registered. `data/raw/parcels/` is empty.
-**Code status:** Aggregation logic exists in `src/scoring/preferences.py` but is untested with real parcel data.
+**Blocker resolved:** the NSGI-account assumption was wrong. NSPRD parcels with PID are public — GeoNOVA download or the `gis7.nsgc.gov.ns.ca/.../ISD_GIS/Property/MapServer` REST service (see DATA-SOURCES §5.1).
+**Code status:** `ingest_parcels` (+ NSPRD REST fetch) ingests/normalizes PID/AAN; `aggregate_to_parcels` carries PID through, ranks, and flags; `export_ranked_parcels` emits the PID list; `score` wires it in; the map gains a "Scored Parcels (PID)" layer. Verified end-to-end against the 40k real scored cells with a synthetic parcel grid (real NSPRD download still pending — REST is geofenced from this environment).
 
-### M3: Calibration and Product Hardening 🟡 NOT STARTED
+### M3: Calibration and Product Hardening 🟢 SCORING REDESIGN DONE
 
 Outcome:
 - Improve hydro calibration, exclusions, and scoring differentiation
@@ -70,7 +70,31 @@ Exit criteria:
 - Core outputs are stable enough for repeatable use
 - Score distribution has meaningful differentiation (not clustered at 100/100)
 
-**Known issue:** Buildable (100%) and solar (98%) still cluster at max score — thresholds too generous for rural NS. Confidence bands now differentiated: 8.7% high, 91.3% medium, 0% low (was all "medium" before per-cell deduction fix). Composite score spread is healthy (P10=12.5, P50=32.5, P90=71.0).
+**Scoring redesign (off-grid energy focus).** Replaced the dead criteria and
+realigned weights to the actual goal (hydro-first; wind as conditional bonus):
+- `solar` (98% at 100) + `buildable` (literally constant 100) → merged into one
+  area-based `open_ground` metric, fed by a buildability mask that now actually
+  excludes water + buildings (was slope-only → 99.8% buildable; now ~94%).
+- `elevation` demoted from a 25% positive (rewarded mid, penalized high) to a
+  10% coastal-flood penalty — high, exposed ground is no longer penalized, so it
+  stops fighting the wind goal.
+- New `wind` criterion: Global Wind Atlas raster when present, else terrain
+  exposure (TPI) proxy. New `score_allrounder` (geometric mean) + `wind_worth_it`.
+- Weights: hydro 40 / access 20 / open_ground 15 / wind 15 / elevation 10.
+
+**🔴 Data bug found: `flow_accumulation.tif` is broken (max 47 cells).** D8 routing
+dies on the large sea-level flats, so accumulation never propagates — which is why
+hydro used a segment-length proxy. The confidence flag keyed off the file's
+*existence*, so it wrongly reported high hydro confidence. Fixes: (1) hydro now
+validates the raster (`flow_accumulation_valid`) and only uses it when river-scale,
+else falls back to the proxy and reports it honestly; (2) `prepare`/`dem.py` now use
+depression **breaching** (handles flats) instead of fill — **re-run `prepare` to
+regenerate a valid accumulation raster** for real hydro drainage areas.
+
+**Remaining limitation:** `open_ground` water exclusion only carves out watercourse
+*lines* (streams.gpkg) + any typed water polygons in land-cover; without a waterbody
+/coastline polygon layer it can still credit lakes/ocean flats. Add NSTDB waterbody
+polygons to fully fix.
 
 ## 3. Recommended Initial Stack ✅ LOCKED
 
@@ -140,13 +164,14 @@ Legend:
 | E2. Folium map | ✅ | Color-coded cells, tooltips, layer controls |
 | E3. Per-record detail summary | 🟡 | Not implemented (P1) |
 
-### Epic F: Parcel Integration 🔴 BLOCKED
+### Epic F: Parcel Integration 🟢 IMPLEMENTED
 
 | Task | Status | Notes |
 |------|--------|-------|
-| F1. Parcel ingest and prep | 🔴 | Blocked on NSGI parcel data |
-| F2. Parcel aggregation logic | ⚠️ | Code exists in `scoring/preferences.py`, untested with real data |
-| F3. Parcel-level flags and reports | 🔴 | Blocked on F1 |
+| F1. Parcel ingest and prep | 🟢 | `ingest_parcels` (local file or `--from-rest`); normalizes PID/AAN, computes area_acres. NSPRD is public — no account. |
+| F2. Parcel aggregation logic | 🟢 | `aggregate_to_parcels` carries PID/AAN, adds n_cells/rank/flags; tested + verified against real scored cells |
+| F3. Parcel-level flags and reports | 🟢 | `export_ranked_parcels` → `ranked_parcels.csv`; "Scored Parcels (PID)" map layer |
+| F4. Real NSPRD run | 🟡 | Download GeoNOVA parcels into `data/raw/parcels/` and re-run `score` (REST geofenced from CI) |
 
 ### Epic G: Validation and Calibration 🟡 NOT STARTED
 

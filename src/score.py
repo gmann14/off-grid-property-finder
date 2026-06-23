@@ -7,7 +7,7 @@ import geopandas as gpd
 
 from src.config import Config
 from src.exclusions import apply_exclusions, load_exclusions
-from src.export import export_results
+from src.export import export_ranked_parcels, export_results
 
 # Import scorers to trigger registration
 import src.scoring.elevation  # noqa: F401
@@ -15,9 +15,12 @@ import src.scoring.solar  # noqa: F401
 import src.scoring.access  # noqa: F401
 import src.scoring.hydro  # noqa: F401
 import src.scoring.buildable  # noqa: F401
+import src.scoring.open_ground  # noqa: F401
+import src.scoring.wind  # noqa: F401
 
+from src.constants import PARCEL_CELL_WEIGHT, PARCEL_TOP_N_CELLS
 from src.scoring.confidence import compute_confidence
-from src.scoring.preferences import aggregate_to_parcels
+from src.scoring.preferences import aggregate_to_parcels, classify_parcels
 from src.scoring.registry import compute_composite_score
 
 logger = logging.getLogger("property_finder")
@@ -75,15 +78,26 @@ def run_score(config: Config, logger: logging.Logger) -> None:
     candidates.to_file(scored_path, driver="GPKG")
     logger.info("Saved scored cells: %s", scored_path)
 
-    # Step 5: Parcel aggregation (if parcels available)
+    # Step 5: Parcel aggregation (Stage B — if parcels available)
     parcels_path = processed / "parcels.gpkg"
     if parcels_path.exists():
-        logger.info("=== Step 5: Parcel aggregation ===")
+        logger.info("=== Step 5: Parcel aggregation (PID) ===")
         parcels = gpd.read_file(parcels_path)
-        parcels = aggregate_to_parcels(candidates, parcels)
+        agg = config.preferences.get("parcel_aggregation", {})
+        parcels = aggregate_to_parcels(
+            candidates,
+            parcels,
+            top_n=agg.get("top_n", PARCEL_TOP_N_CELLS),
+            cell_weight=agg.get("cell_weight", PARCEL_CELL_WEIGHT),
+        )
+        # Type parcels (land-only / developed / severance) from building footprints
+        buildings_path = processed / "buildings.gpkg"
+        buildings = gpd.read_file(buildings_path) if buildings_path.exists() else None
+        parcels = classify_parcels(parcels, buildings)
         parcels_out = output / "scored_parcels.gpkg"
         parcels.to_file(parcels_out, driver="GPKG")
         logger.info("Saved scored parcels: %s", parcels_out)
+        export_ranked_parcels(parcels, output)
     else:
         logger.info("No parcel data; skipping Stage B aggregation")
 
@@ -102,8 +116,11 @@ def _detect_data_flags(config: Config) -> dict[str, bool]:
     flood_path = processed / "flood.gpkg"
     flags["no_flood_data"] = not flood_path.exists()
 
+    # Proxy is in use unless a *valid* (propagated) accumulation raster exists —
+    # a present-but-broken raster must not inflate hydro confidence.
+    from src.scoring.hydro import flow_accumulation_valid
     flow_acc_path = processed / "flow_accumulation.tif"
-    flags["hydro_drainage_proxy_only"] = not flow_acc_path.exists()
+    flags["hydro_drainage_proxy_only"] = not flow_accumulation_valid(flow_acc_path)
 
     # Check DEM resolution
     dem_path = processed / "dem.tif"
@@ -117,5 +134,9 @@ def _detect_data_flags(config: Config) -> dict[str, bool]:
             flags["hydro_20m_dem"] = False
     else:
         flags["hydro_20m_dem"] = False
+
+    # Wind scored from terrain-exposure proxy rather than a wind-resource raster
+    from src.scoring.wind import wind_uses_proxy
+    flags["wind_proxy_only"] = wind_uses_proxy(config)
 
     return flags

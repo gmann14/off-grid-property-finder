@@ -13,6 +13,7 @@ from src.config import Config
 from src.constants import (
     GRAVITY,
     DEFAULT_EFFICIENCY,
+    FLOW_ACCUM_MIN_VALID_CELLS,
     HYDRO_PAIR_SEPARATIONS,
     HYDRO_POWER_THRESHOLDS,
     MIN_DRAINAGE_AREA_KM2,
@@ -23,6 +24,51 @@ from src.constants import (
 from src.scoring.registry import register
 
 logger = logging.getLogger("property_finder")
+
+
+def flow_accumulation_valid(path: Path) -> bool:
+    """True if a D8 flow-accumulation raster actually propagated to river scale.
+
+    Guards against the common failure where D8 routing dies on large flats and
+    accumulation maxes out at a few dozen cells (useless for drainage area).
+    """
+    if not path.exists():
+        return False
+    try:
+        import rasterio
+        with rasterio.open(path) as src:
+            arr = src.read(1)
+            nd = src.nodata
+            valid = arr[arr != nd] if nd is not None else arr
+            if valid.size == 0:
+                return False
+            return float(valid.max()) >= FLOW_ACCUM_MIN_VALID_CELLS
+    except Exception:
+        return False
+
+
+def _accum_drainage_km2(facc_src, x: float, y: float, px_km2: float) -> float | None:
+    """Drainage area (km²) at a point: max upstream-cell count in a 3×3 window.
+
+    The 3×3 max tolerates slight misalignment between the mapped stream line and
+    the DEM-derived channel pixel.
+    """
+    res = abs(facc_src.res[0])
+    best = None
+    for dx in (-res, 0.0, res):
+        for dy in (-res, 0.0, res):
+            try:
+                v = float(next(facc_src.sample([(x + dx, y + dy)]))[0])
+            except Exception:
+                continue
+            nd = facc_src.nodata
+            if nd is not None and v == nd:
+                continue
+            if best is None or v > best:
+                best = v
+    if best is None:
+        return None
+    return best * px_km2
 
 
 def _estimate_flow_rate(drainage_area_km2: float) -> float:
@@ -187,6 +233,22 @@ def score_hydro(candidates: gpd.GeoDataFrame, config: Config) -> pd.Series:
 
     stream_tree = STRtree(streams.geometry.values)
 
+    # Prefer a validated flow-accumulation raster for drainage area; otherwise
+    # fall back to the segment-length proxy (and the confidence score reflects it).
+    facc_path = config.paths.processed / "flow_accumulation.tif"
+    facc_src = None
+    facc_px_km2 = 0.0
+    if flow_accumulation_valid(facc_path):
+        try:
+            import rasterio
+            facc_src = rasterio.open(facc_path)
+            facc_px_km2 = (abs(facc_src.res[0]) * abs(facc_src.res[1])) / 1e6
+            logger.info("Hydro: using validated flow-accumulation raster for drainage area")
+        except Exception:
+            facc_src = None
+    if facc_src is None:
+        logger.info("Hydro: flow-accumulation unavailable/invalid; using segment-length proxy")
+
     has_dem = dem_path.exists()
     dem_src = None
     cell_zonal = None
@@ -230,7 +292,15 @@ def score_hydro(candidates: gpd.GeoDataFrame, config: Config) -> pd.Series:
             stream = streams.iloc[i]
             stream_geom = stream.geometry
 
-            drainage_area = _estimate_drainage_area(stream, streams)
+            # Drainage area at the point on the stream nearest this cell.
+            drainage_area = None
+            if facc_src is not None:
+                nearest_pt = stream_geom.interpolate(stream_geom.project(cell.geometry.centroid))
+                drainage_area = _accum_drainage_km2(
+                    facc_src, nearest_pt.x, nearest_pt.y, facc_px_km2
+                )
+            if drainage_area is None:
+                drainage_area = _estimate_drainage_area(stream, streams)
             if drainage_area < MIN_DRAINAGE_AREA_KM2:
                 continue
 
@@ -277,5 +347,7 @@ def score_hydro(candidates: gpd.GeoDataFrame, config: Config) -> pd.Series:
 
     if dem_src is not None:
         dem_src.close()
+    if facc_src is not None:
+        facc_src.close()
 
     return pd.Series(scores, index=candidates.index, dtype=float)

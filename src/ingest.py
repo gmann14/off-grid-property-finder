@@ -343,6 +343,252 @@ def ingest_protected_areas(config: Config) -> Path | None:
     return out_path
 
 
+def _normalize_parcel_fields(gdf: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
+    """Rename source PID/AAN columns to canonical ``PID``/``AAN``.
+
+    PIDs and AANs are identifiers, not numbers — leading zeros are
+    significant — so they are coerced to stripped strings. The first matching
+    source column wins; unmatched parcels keep an empty string.
+    """
+    from src.constants import PARCEL_AAN_FIELDS, PARCEL_PID_FIELDS
+
+    gdf = gdf.copy()
+    upper = {c.upper(): c for c in gdf.columns}
+
+    def _first_match(candidates: tuple[str, ...]) -> str | None:
+        for cand in candidates:
+            if cand.upper() in upper:
+                return upper[cand.upper()]
+        return None
+
+    pid_col = _first_match(PARCEL_PID_FIELDS)
+    if pid_col is not None and pid_col != "PID":
+        gdf = gdf.rename(columns={pid_col: "PID"})
+    elif pid_col is None:
+        logger.warning(
+            "No PID-like column found in parcel data (columns: %s); "
+            "PID will be blank", list(gdf.columns)
+        )
+        gdf["PID"] = ""
+
+    aan_col = _first_match(PARCEL_AAN_FIELDS)
+    if aan_col is not None and aan_col != "AAN":
+        gdf = gdf.rename(columns={aan_col: "AAN"})
+
+    # Identifiers as clean strings (preserve leading zeros, drop trailing ".0")
+    for col in ("PID", "AAN"):
+        if col in gdf.columns:
+            gdf[col] = (
+                gdf[col]
+                .astype("string")
+                .str.replace(r"\.0$", "", regex=True)
+                .fillna("")
+                .str.strip()
+            )
+    return gdf
+
+
+def _build_nsprd_query_url(
+    base_url: str, layer_id: int, bbox_4326: tuple, offset: int, count: int
+) -> str:
+    """Build an ArcGIS REST query URL for a bbox page (pure, testable)."""
+    from urllib.parse import urlencode
+
+    xmin, ymin, xmax, ymax = bbox_4326
+    params = {
+        "where": "1=1",
+        "geometry": f"{xmin},{ymin},{xmax},{ymax}",
+        "geometryType": "esriGeometryEnvelope",
+        "inSR": "4326",
+        "outSR": "4326",
+        "spatialRel": "esriSpatialRelIntersects",
+        "outFields": "*",
+        "returnGeometry": "true",
+        "resultOffset": str(offset),
+        "resultRecordCount": str(count),
+        "f": "geojson",
+    }
+    return f"{base_url.rstrip('/')}/{layer_id}/query?{urlencode(params)}"
+
+
+def _features_to_gdf(geojson: dict) -> gpd.GeoDataFrame:
+    """Parse an ArcGIS GeoJSON FeatureCollection into a GeoDataFrame (4326)."""
+    features = (geojson or {}).get("features", [])
+    if not features:
+        return gpd.GeoDataFrame(geometry=[], crs="EPSG:4326")
+    return gpd.GeoDataFrame.from_features(features, crs="EPSG:4326")
+
+
+def fetch_nsprd_parcels(
+    bbox_working: tuple,
+    base_url: str | None = None,
+    layer_id: int | None = None,
+    page_size: int | None = None,
+    timeout: int = 60,
+) -> gpd.GeoDataFrame | None:
+    """Fetch NSPRD parcel polygons (with PID) from the public ArcGIS REST service.
+
+    Queries by the study-area bounding box, paginating until the server stops
+    returning a full page. Network-dependent and best-effort: returns ``None``
+    on any failure so the caller can fall back to a local file. Geometry is
+    reprojected to the working CRS.
+    """
+    from src.constants import (
+        NSPRD_PAGE_SIZE,
+        NSPRD_PARCEL_LAYER_ID,
+        NSPRD_PARCEL_SERVICE,
+    )
+
+    base_url = base_url or NSPRD_PARCEL_SERVICE
+    layer_id = NSPRD_PARCEL_LAYER_ID if layer_id is None else layer_id
+    page_size = page_size or NSPRD_PAGE_SIZE
+
+    try:
+        import requests
+    except ImportError:
+        logger.error("`requests` is required for --from-rest parcel ingestion")
+        return None
+
+    # Service expects the query envelope in lat/lon (inSR=4326).
+    bbox_4326 = tuple(
+        gpd.GeoSeries([box(*bbox_working)], crs=WORKING_CRS)
+        .to_crs("EPSG:4326")
+        .total_bounds
+    )
+
+    pages: list[gpd.GeoDataFrame] = []
+    offset = 0
+    try:
+        while True:
+            url = _build_nsprd_query_url(base_url, layer_id, bbox_4326, offset, page_size)
+            resp = requests.get(url, timeout=timeout)
+            resp.raise_for_status()
+            payload = resp.json()
+            page = _features_to_gdf(payload)
+            if page.empty:
+                break
+            pages.append(page)
+            logger.info("NSPRD: fetched %d parcels (offset %d)", len(page), offset)
+            if len(page) < page_size and not payload.get("exceededTransferLimit"):
+                break
+            offset += page_size
+    except Exception:
+        logger.exception("NSPRD REST fetch failed; fall back to a local parcel file")
+        return None
+
+    if not pages:
+        logger.warning("NSPRD REST returned no parcels for the study area")
+        return None
+
+    import pandas as pd
+
+    combined = gpd.GeoDataFrame(
+        pd.concat(pages, ignore_index=True), crs="EPSG:4326"
+    )
+    return combined.to_crs(WORKING_CRS)
+
+
+def ingest_parcels(config: Config, source: str = "local") -> Path | None:
+    """Ingest NS property parcels (with PID) into ``processed/parcels.gpkg``.
+
+    ``source="local"`` reads a downloaded file from ``data/raw/parcels/``
+    (GPKG, shapefile, GeoJSON, or File Geodatabase). ``source="rest"`` pulls
+    directly from the public NSPRD ArcGIS service for the study-area bbox.
+
+    Output carries canonical ``PID`` / ``AAN`` columns and ``area_acres``,
+    reprojected to the working CRS and clipped to the study area.
+    """
+    raw = config.paths.raw
+    processed = config.paths.processed
+    out_path = processed / "parcels.gpkg"
+
+    if out_path.exists():
+        logger.info("Parcels already processed: %s", out_path)
+        return out_path
+
+    if source == "rest":
+        logger.info("Fetching parcels from NSPRD REST service")
+        gdf = fetch_nsprd_parcels(config.study_area.bbox)
+        if gdf is None or gdf.empty:
+            return None
+    else:
+        candidates = (
+            list((raw / "parcels").rglob("*.gpkg"))
+            + list((raw / "parcels").rglob("*.shp"))
+            + list((raw / "parcels").rglob("*.geojson"))
+            + list((raw / "parcels").rglob("*.gdb"))
+        )
+        if not candidates:
+            logger.warning(
+                "No parcel data found in %s — download NSPRD parcels (GeoNOVA) "
+                "or run `ingest-parcels --from-rest`", raw / "parcels"
+            )
+            return None
+        src_file = candidates[0]
+        logger.info("Ingesting parcels from %s", src_file)
+        gdf = gpd.read_file(src_file)
+        gdf = _reproject_to_working(gdf)
+
+    # Clip to study area
+    bbox_geom = box(*config.study_area.bbox)
+    gdf = gdf[gdf.intersects(bbox_geom)].copy()
+    if gdf.empty:
+        logger.warning("No parcels within study area")
+        return None
+    gdf = gpd.clip(gdf, bbox_geom)
+    # Drop slivers / non-polygon leftovers from clipping
+    gdf = gdf[gdf.geometry.geom_type.isin(("Polygon", "MultiPolygon"))].copy()
+
+    gdf = _normalize_parcel_fields(gdf)
+    gdf["area_acres"] = gdf.geometry.area / 4046.86
+
+    processed.mkdir(parents=True, exist_ok=True)
+    gdf.to_file(out_path, driver="GPKG")
+    logger.info(
+        "Parcels processed: %s (%d parcels, %d with PID)",
+        out_path, len(gdf), int((gdf.get("PID", "") != "").sum()),
+    )
+    return out_path
+
+
+def ingest_waterbodies(config: Config) -> Path | None:
+    """Ingest waterbody polygons (lakes/ponds/ocean) for the buildability mask.
+
+    Optional. Looks in ``data/raw/water/`` (or ``waterbodies/``) for a polygon
+    layer — e.g. the NSTDB waterbody layer — and clips/reprojects it. Without
+    this layer the mask falls back to a DEM sea-level proxy + watercourse lines,
+    which cannot exclude lake/ocean interiors.
+    """
+    raw = config.paths.raw
+    processed = config.paths.processed
+    out_path = processed / "waterbodies.gpkg"
+
+    if out_path.exists():
+        logger.info("Waterbodies already processed: %s", out_path)
+        return out_path
+
+    candidates = (
+        list((raw / "water").rglob("*.shp")) + list((raw / "water").rglob("*.gpkg"))
+        + list((raw / "waterbodies").rglob("*.shp")) + list((raw / "waterbodies").rglob("*.gpkg"))
+    )
+    if not candidates:
+        logger.info("No waterbody polygon layer found (optional); skipping")
+        return None
+
+    gdf = gpd.read_file(candidates[0])
+    gdf = _reproject_to_working(gdf)
+    bbox_geom = box(*config.study_area.bbox)
+    gdf = gdf[gdf.intersects(bbox_geom)].copy()
+    if gdf.empty:
+        return None
+    gdf = gdf[gdf.geometry.geom_type.isin(("Polygon", "MultiPolygon"))].copy()
+
+    processed.mkdir(parents=True, exist_ok=True)
+    gdf.to_file(out_path, driver="GPKG")
+    logger.info("Waterbodies processed: %s (%d features)", out_path, len(gdf))
+    return out_path
+
+
 def run_ingest(config: Config, logger: logging.Logger) -> dict[str, Path | None]:
     """Run all ingestion steps. Returns dict of layer_name -> processed path."""
     processed = config.paths.processed
@@ -356,6 +602,8 @@ def run_ingest(config: Config, logger: logging.Logger) -> dict[str, Path | None]
     results["land_cover"] = ingest_land_cover(config)
     results["crown_land"] = ingest_crown_land(config)
     results["protected_areas"] = ingest_protected_areas(config)
+    results["waterbodies"] = ingest_waterbodies(config)
+    results["parcels"] = ingest_parcels(config)
 
     logger.info("=== Ingestion summary ===")
     for name, path in results.items():

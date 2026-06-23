@@ -39,6 +39,28 @@ def ingest(ctx: click.Context) -> None:
     run_ingest(cfg, logger)
 
 
+@cli.command("ingest-parcels")
+@click.option(
+    "--from-rest", is_flag=True, default=False,
+    help="Pull parcels from the public NSPRD ArcGIS service instead of data/raw/parcels/",
+)
+@click.pass_context
+def ingest_parcels_cmd(ctx: click.Context, from_rest: bool) -> None:
+    """Ingest NS property parcels (with PID) for Stage B aggregation."""
+    from src.ingest import ingest_parcels
+
+    cfg = ctx.obj["config"]
+    logger = ctx.obj["logger"]
+    path = ingest_parcels(cfg, source="rest" if from_rest else "local")
+    if path is None:
+        logger.error(
+            "Parcel ingestion produced no output. Place a parcel file in "
+            "data/raw/parcels/ or pass --from-rest."
+        )
+    else:
+        logger.info("Parcels ready: %s. Re-run `score` to produce ranked PIDs.", path)
+
+
 @cli.command()
 @click.pass_context
 def prepare(ctx: click.Context) -> None:

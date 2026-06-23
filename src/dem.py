@@ -73,6 +73,67 @@ def generate_aspect(dem_path: Path, out_path: Path) -> Path:
     return out_path
 
 
+def generate_exposure(dem_path: Path, out_path: Path, radius_m: float = 1000.0) -> Path:
+    """Generate a Topographic Position Index (TPI) raster for wind exposure.
+
+    TPI = cell elevation minus the mean elevation of a surrounding window.
+    Positive = ridge/hilltop (wind-exposed); negative = valley (sheltered).
+    Used as a wind proxy when no wind-resource raster is available.
+    """
+    if out_path.exists():
+        logger.debug("Exposure raster exists, skipping: %s", out_path)
+        return out_path
+
+    try:
+        from scipy.ndimage import uniform_filter
+    except ImportError:
+        logger.warning("scipy not installed; skipping exposure (TPI) raster")
+        return out_path
+
+    with rasterio.open(dem_path) as src:
+        dem = src.read(1).astype(np.float32)
+        res_x, _ = src.res
+        meta = src.meta.copy()
+        nodata = src.nodata
+
+    valid = np.ones_like(dem, dtype=bool)
+    if nodata is not None:
+        valid = dem != nodata
+    filled = np.where(valid, dem, np.nan)
+
+    window = max(3, int(round((2 * radius_m) / abs(res_x))))
+    # Mean of surrounding elevations, ignoring NaN, via ratio of filtered sums.
+    data0 = np.where(valid, filled, 0.0)
+    cnt = uniform_filter(valid.astype(np.float32), size=window, mode="nearest")
+    s = uniform_filter(data0, size=window, mode="nearest")
+    with np.errstate(invalid="ignore", divide="ignore"):
+        local_mean = np.where(cnt > 0, s / cnt, 0.0)
+    tpi = np.where(valid, filled - local_mean, -9999.0).astype(np.float32)
+
+    meta.update(dtype="float32", nodata=-9999, compress="lzw")
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    with rasterio.open(out_path, "w", **meta) as dst:
+        dst.write(tpi, 1)
+
+    logger.info("Generated exposure (TPI) raster: %s (window=%d px)", out_path, window)
+    return out_path
+
+
+def _condition_dem(wbt, dem_abs: str, out_abs: str) -> None:
+    """Hydrologically condition a DEM for flow routing.
+
+    Prefers least-cost breaching (handles the large flats in coastal NS where
+    plain depression-filling leaves flow undefined and accumulation fails to
+    propagate); falls back to fill_depressions if breaching is unavailable.
+    """
+    if hasattr(wbt, "breach_depressions_least_cost"):
+        wbt.breach_depressions_least_cost(dem_abs, out_abs, dist=200, fill=True)
+    elif hasattr(wbt, "breach_depressions"):
+        wbt.breach_depressions(dem_abs, out_abs)
+    else:
+        wbt.fill_depressions(dem_abs, out_abs)
+
+
 def generate_flow_direction(dem_path: Path, out_path: Path) -> Path:
     """Generate flow direction using WhiteboxTools D8 algorithm."""
     if out_path.exists():
@@ -89,12 +150,12 @@ def generate_flow_direction(dem_path: Path, out_path: Path) -> Path:
         dem_abs = str(dem_path.resolve())
         out_abs = str(out_path.resolve())
 
-        # WhiteboxTools requires filling depressions first
+        # WhiteboxTools requires a hydrologically conditioned DEM first
         filled_path = out_path.parent / "dem_filled.tif"
         filled_abs = str(filled_path.resolve())
         if not filled_path.exists():
-            wbt.fill_depressions(dem_abs, filled_abs)
-            logger.info("Filled DEM depressions: %s", filled_path)
+            _condition_dem(wbt, dem_abs, filled_abs)
+            logger.info("Conditioned DEM (breach/fill): %s", filled_path)
 
         wbt.d8_pointer(filled_abs, out_abs)
         _compress_raster(out_path)
@@ -134,14 +195,29 @@ def generate_flow_accumulation(dem_path: Path, out_path: Path) -> Path:
         flow_dir_abs = str(flow_dir_path.resolve())
 
         if not filled_path.exists():
-            wbt.fill_depressions(dem_abs, filled_abs)
+            _condition_dem(wbt, dem_abs, filled_abs)
 
         if not flow_dir_path.exists():
             wbt.d8_pointer(filled_abs, flow_dir_abs)
 
         wbt.d8_flow_accumulation(flow_dir_abs, out_abs, out_type="cells")
         _compress_raster(out_path)
-        logger.info("Generated flow accumulation raster: %s", out_path)
+
+        # Sanity-check propagation: a valid accumulation over a real study area
+        # reaches river scale. Warn loudly if it didn't (e.g., flats broke D8).
+        try:
+            with rasterio.open(out_path) as src:
+                arr = src.read(1)
+                amax = float(np.nanmax(arr[arr != (src.nodata if src.nodata is not None else np.nan)]))
+            if amax < 10000:
+                logger.warning(
+                    "Flow accumulation max is only %.0f cells — likely failed to "
+                    "propagate (flats). Hydro will fall back to the segment proxy.",
+                    amax,
+                )
+            logger.info("Generated flow accumulation raster: %s (max=%.0f cells)", out_path, amax)
+        except Exception:
+            logger.info("Generated flow accumulation raster: %s", out_path)
 
     except ImportError:
         logger.warning(
