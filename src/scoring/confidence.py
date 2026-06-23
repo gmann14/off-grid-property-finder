@@ -58,14 +58,15 @@ def compute_confidence(
     for idx, cell in candidates.iterrows():
         cell_flags = []
 
-        # Access unverified flag
+        # Access unverified flag (pd.notna guards against NaN sub-scores, not
+        # just None — an excluded/missing score is NaN, where `< x` is False)
         access_score = cell.get("score_access")
-        if access_score is not None and access_score < ACCESS_FLAG_THRESHOLD:
+        if pd.notna(access_score) and access_score < ACCESS_FLAG_THRESHOLD:
             cell_flags.append(FLAG_ACCESS_UNVERIFIED)
 
         # Hydro low confidence flag
         hydro_score = cell.get("score_hydro")
-        if hydro_score is not None and hydro_score == 0:
+        if pd.notna(hydro_score) and hydro_score == 0:
             cell_flags.append(FLAG_HYDRO_LOW_CONFIDENCE)
 
         # Apply per-cell deductions

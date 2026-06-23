@@ -140,10 +140,13 @@ def _compute_head_along_river(
     head = max(elevations) - min(elevations)
     min_elev = min(elevations)
 
-    # If the stream is near sea level (< 5m), it's likely tidal/estuarine.
-    # Wide, slow tidal rivers have no usable head for micro-hydro.
+    # Tidal/estuarine reaches near sea level have no usable head ONLY when they
+    # are also essentially flat. A steep stream dropping into tidewater keeps its
+    # head — so test gradient, don't clamp head to the (near-zero) min elevation.
     if min_elev < 5.0:
-        head = min(head, min_elev)  # Cap head at stream elevation
+        gradient = head / sample_length if sample_length > 0 else 0.0
+        if gradient < 0.005:  # < 0.5% slope near sea level → flat tidal channel
+            head = 0.0
 
     return head, True
 

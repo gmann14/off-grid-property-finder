@@ -63,7 +63,9 @@ def aggregate_to_parcels(
     real property identifiers. Adds ``n_cells``, ``rank`` (over scored parcels),
     and a ``flags`` column marking parcels with no assigned candidates.
     """
-    parcels = parcels.copy()
+    # reset_index so the sjoin index_right -> parcels.index.map alignment can't
+    # be corrupted by a duplicate/non-default parcel index.
+    parcels = parcels.reset_index(drop=True).copy()
 
     # Assign eligible-cell centroids to parcels (single spatial join, grouped).
     eligible = candidates
@@ -125,7 +127,7 @@ def classify_parcels(
     be split off — the basis for the owner-outreach workflow. Requires
     ``cell_score`` and ``area_acres`` (from aggregate_to_parcels); both optional.
     """
-    parcels = parcels.copy()
+    parcels = parcels.reset_index(drop=True).copy()
 
     # Count buildings whose centroid falls within each parcel
     n_buildings = pd.Series(0, index=parcels.index, dtype=int)

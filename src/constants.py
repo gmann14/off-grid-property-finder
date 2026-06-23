@@ -116,6 +116,9 @@ WIND_WORTH_IT_OPEN_GROUND_MAX = 40  # open-ground score at/below this
 # plausibly river-scale; otherwise fall back to the segment-length proxy and
 # report low hydro confidence honestly.
 FLOW_ACCUM_MIN_VALID_CELLS = 10000
+# Resolution (m) to route flow at; coarser than fine DEMs so D8 propagates
+# through coastal flats. None = route at native DEM resolution.
+FLOW_ACCUM_TARGET_RES_M = 20.0
 
 # Default scoring weights (sum to 100 over enabled criteria).
 # Redesign rationale: hydro is the scarce, hard-to-replicate differentiator and
@@ -142,11 +145,12 @@ CONFIDENCE_DEDUCTIONS = {
     "wind_proxy_only": 10,  # wind from terrain exposure, not a wind-resource raster
 }
 
-# Confidence bands
+# Confidence bands — contiguous half-open ranges [low, high) so fractional
+# confidence values can't fall into a gap (top band is inclusive of 100).
 CONFIDENCE_BANDS = [
-    (80, 100, "high"),
-    (55, 79, "medium"),
-    (0, 54, "low"),
+    (80, 100.001, "high"),
+    (55, 80, "medium"),
+    (0, 55, "low"),
 ]
 
 # Flag names

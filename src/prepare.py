@@ -36,10 +36,14 @@ def run_prepare(config: Config, logger: logging.Logger) -> None:
     logger.info("=== Phase 2: DEM derivatives ===")
     dem_path = ingested.get("dem")
     if dem_path and dem_path.exists():
+        from src.constants import FLOW_ACCUM_TARGET_RES_M
         generate_slope(dem_path, processed / "slope.tif")
         generate_aspect(dem_path, processed / "aspect.tif")
         generate_exposure(dem_path, processed / "exposure.tif")
-        generate_flow_accumulation(dem_path, processed / "flow_accumulation.tif")
+        generate_flow_accumulation(
+            dem_path, processed / "flow_accumulation.tif",
+            target_res_m=FLOW_ACCUM_TARGET_RES_M,
+        )
     else:
         logger.warning("No DEM available; skipping derivative generation")
 

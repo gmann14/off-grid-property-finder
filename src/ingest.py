@@ -385,6 +385,11 @@ def _normalize_parcel_fields(gdf: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
                 .fillna("")
                 .str.strip()
             )
+    # NS PIDs are 8 digits; if a numeric driver dropped the leading zero before
+    # we stringified, re-pad all-digit PIDs (1-7 chars) back to width 8.
+    if "PID" in gdf.columns:
+        digit_pid = gdf["PID"].str.fullmatch(r"\d{1,7}").fillna(False)
+        gdf.loc[digit_pid, "PID"] = gdf.loc[digit_pid, "PID"].str.zfill(8)
     return gdf
 
 
@@ -404,6 +409,10 @@ def _build_nsprd_query_url(
         "spatialRel": "esriSpatialRelIntersects",
         "outFields": "*",
         "returnGeometry": "true",
+        # Stable ordering is required for resultOffset paging — without it the
+        # server's row order is unspecified across requests, so pages can overlap
+        # or drop records.
+        "orderByFields": "OBJECTID",
         "resultOffset": str(offset),
         "resultRecordCount": str(count),
         "f": "geojson",
@@ -456,10 +465,13 @@ def fetch_nsprd_parcels(
         .total_bounds
     )
 
+    # Hard cap so a MapServer that ignores resultOffset (no pagination support)
+    # can't loop forever returning the same first page.
+    max_offset = 1_000_000
     pages: list[gpd.GeoDataFrame] = []
     offset = 0
     try:
-        while True:
+        while offset <= max_offset:
             url = _build_nsprd_query_url(base_url, layer_id, bbox_4326, offset, page_size)
             resp = requests.get(url, timeout=timeout)
             resp.raise_for_status()
@@ -472,6 +484,9 @@ def fetch_nsprd_parcels(
             if len(page) < page_size and not payload.get("exceededTransferLimit"):
                 break
             offset += page_size
+        else:
+            logger.warning("NSPRD paging hit the %d-record cap; results may be truncated "
+                           "(server may not support resultOffset paging)", max_offset)
     except Exception:
         logger.exception("NSPRD REST fetch failed; fall back to a local parcel file")
         return None

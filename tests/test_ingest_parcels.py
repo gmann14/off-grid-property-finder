@@ -74,6 +74,16 @@ def test_normalize_preserves_leading_zero_string_pid():
     assert out["PID"].iloc[0] == "00017183"
 
 
+def test_normalize_zfills_numerically_loaded_pid():
+    # A driver that loaded PID as an int dropped the leading zeros; re-pad to 8.
+    gdf = gpd.GeoDataFrame(
+        {"PID": [17183, 60010001]}, geometry=[box(0, 0, 1, 1), box(1, 0, 2, 1)], crs=CRS,
+    )
+    out = _normalize_parcel_fields(gdf)
+    assert out["PID"].iloc[0] == "00017183"   # 5-digit int -> zero-padded
+    assert out["PID"].iloc[1] == "60010001"   # already 8 digits, unchanged
+
+
 # --- REST helpers (pure, no network) ---------------------------------------
 
 def test_build_query_url_has_bbox_and_pagination():

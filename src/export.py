@@ -42,7 +42,7 @@ def export_results(candidates: gpd.GeoDataFrame, output_dir: Path) -> None:
         logger.warning("Could not compute WGS84 centroids for CSV export")
 
     csv_path = output_dir / "scored_cells.csv"
-    csv_df.to_csv(csv_path)
+    csv_df.to_csv(csv_path, index=False)
     logger.info("Exported CSV: %s (%d rows)", csv_path, len(csv_df))
 
     # GeoJSON (WGS84 for web mapping)
@@ -66,7 +66,7 @@ def export_results(candidates: gpd.GeoDataFrame, output_dir: Path) -> None:
         except Exception:
             pass
         eligible_path = output_dir / "ranked_eligible.csv"
-        eligible_csv.to_csv(eligible_path)
+        eligible_csv.to_csv(eligible_path, index=False)
         logger.info("Exported eligible-only CSV: %s (%d rows)", eligible_path, len(eligible_csv))
 
 
