@@ -115,7 +115,7 @@ Place raw data in `data/raw/` subdirectories:
 | `land-cover/` | Land cover polygons (Shapefile) | [NSTDB](https://nsgi.novascotia.ca/WSF_DDS/DDS.svc/DownloadFile?tkey=fhrTtdnDvfytwLz6&id=13) | Yes |
 | `exclusions/` | Protected areas, flood zones | [GeoNova](https://geonova.novascotia.ca/geodata/) | Recommended |
 | `crown-land/` | Crown land parcels (Shapefile) | [NS Open Data](https://data.novascotia.ca/Lands-Forests-and-Wildlife/Crown-Land/3nka-59nz) | Optional |
-| `parcels/` | Property parcels with PID (NSPRD) | [GeoNOVA](https://geonova.novascotia.ca/nova-scotia-property-records-parcels) (free, no account) or `ingest-parcels --from-rest` | Stage B (PIDs) |
+| `parcels/` | Property parcels with PID (NSPRD) | [GeoNOVA](https://geonova.novascotia.ca/nova-scotia-property-records-parcels) (**fee/restricted, login**) or `ingest-parcels --from-rest` (NS-network only); for a few parcels use ViewPoint/PVSC lookups | Stage B (PIDs) |
 
 Raw data files are not committed to the repo. The processed files in `data/processed/` contain everything the pipeline needs for scoring. To re-ingest from scratch (e.g., to change the study area), re-download the raw files from the links above and run `python -m src prepare`.
 

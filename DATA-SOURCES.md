@@ -159,16 +159,14 @@ Not a data source per se — we derive this from the DEM:
 
 ## 5. Property / Parcel Data
 
-### 5.1 NS Property Records Parcels (NSPRD) ✅ PUBLIC — used by Stage B
+### 5.1 NS Property Records Parcels (NSPRD) ⚠️ bulk download is FEE/RESTRICTED
 
 - **Source:** Nova Scotia Property Records Database (NSPRD), via GeoNOVA / NSGI
-- **Download (GeoNOVA):** https://geonova.novascotia.ca/nova-scotia-property-records-parcels — vector file of parcel boundaries **keyed by PID**
-- **ArcGIS REST:** https://gis7.nsgc.gov.ns.ca/arcgis/rest/services/ISD_GIS/Property/MapServer — public MapServer serving NSPRD boundaries + **PID** with limited attribution; queryable by bbox (`/<layer>/query?f=geojson&...`)
-- **Format:** Shapefile/GDB/GeoJSON download, or ArcGIS REST query → GeoJSON
-- **Coverage:** All of Nova Scotia (cadastral data)
-- **Cost:** Free. **No account required** for the boundary + PID layer (the earlier "DataLocator account required" assumption applied to richer cadastral attribution, not the public PID boundary layer).
-- **Used by:** `python -m src ingest-parcels` (reads `data/raw/parcels/`) or `ingest-parcels --from-rest` (pulls the bbox from the REST service). PID/AAN are normalized to canonical columns; see `src/ingest.py::ingest_parcels`.
-- **Caveat:** the REST service is geofenced/rate-limited and may be unreachable from some networks/CI — prefer the GeoNOVA download for reproducible runs. The parcel polygon layer id may vary; override via the service catalog if the default returns no polygons.
+- **Bulk download (GeoNOVA DataLocator):** https://geonova.novascotia.ca/nova-scotia-property-records-parcels — the authoritative parcel vector file **keyed by PID**, BUT it is **Fee / License: Restricted / requires DataLocator login** (page metadata dated March 2015). NOT free or open. Correction: an earlier version of this doc wrongly called it "free, no account" — that conflated the public viewing service with the bulk download.
+- **ArcGIS REST (display service):** https://gis7.nsgc.gov.ns.ca/arcgis/rest/services/ISD_GIS/Property/MapServer — `ISD_GIS` = Internal Services; serves NSPRD boundaries + **PID** with limited attribution and is queryable by bbox. Appears to be **restricted to NS-government networks** — DNS resolves but TCP/443 times out from general internet / data-centre IPs (only this host fails; other NSGI hosts respond). May be reachable from some NS connections; test in a browser before relying on it.
+- **Free ways to get PIDs without the bulk file:** ViewPoint.ca (§5.4) and PVSC (§5.3) per-property lookups, and Regrid (§5.5) free web browse — all return PID/AAN per parcel. For a short candidate list these are the pragmatic route.
+- **Used by:** `python -m src ingest-parcels` (reads a downloaded file from `data/raw/parcels/`) or `ingest-parcels --from-rest [--layer N] [--service URL]` (REST, if reachable). PID/AAN normalized to canonical columns; see `src/ingest.py`.
+- **Bottom line:** there is no confirmed *free, bulk, programmatic* NS private-parcel source. Stage-B-at-scale needs either the fee/restricted download, NS-network access to the REST service, or a commercial source (Regrid).
 
 ### 5.2 NS Property Online
 
