@@ -573,6 +573,90 @@ def ingest_parcels(
     return out_path
 
 
+def _mask_to_polygons(mask, transform, working_crs: str) -> gpd.GeoDataFrame:
+    """Polygonize a 0/1 raster mask into dissolved polygons (pure, testable)."""
+    from rasterio.features import shapes as rio_shapes
+    from shapely.geometry import shape
+
+    polys = [shape(g) for g, v in rio_shapes(mask, mask=mask == 1, transform=transform) if v == 1]
+    if not polys:
+        return gpd.GeoDataFrame(geometry=[], crs=working_crs)
+    gdf = gpd.GeoDataFrame(geometry=polys, crs=working_crs)
+    return gdf.dissolve().explode(index_parts=False).reset_index(drop=True)
+
+
+def fetch_flood_polygons(
+    bbox_working: tuple, service_url: str | None = None, size: int | None = None, timeout: int = 120
+) -> gpd.GeoDataFrame | None:
+    """Export the coastal-flooding raster for the bbox and polygonize its extent.
+
+    The flooding layers are raster (not vector), so we render them via the
+    MapServer ``export`` op with a transparent background, treat any rendered
+    (alpha>0) pixel as flooded, and polygonize. Best-effort: returns None on
+    failure. Transform is built from the requested bbox/size so georeferencing
+    doesn't depend on the server embedding it.
+    """
+    from rasterio.io import MemoryFile
+    from rasterio.transform import from_bounds
+
+    from src.constants import FLOOD_EXPORT_SIZE, FLOOD_SERVICE
+
+    try:
+        import numpy as np
+        import requests
+    except ImportError:
+        logger.error("requests/numpy required for flood ingestion")
+        return None
+
+    base = (service_url or FLOOD_SERVICE).rstrip("/") + "/export"
+    size = size or FLOOD_EXPORT_SIZE
+    xmin, ymin, xmax, ymax = bbox_working
+    params = {
+        "bbox": f"{xmin},{ymin},{xmax},{ymax}", "bboxSR": "2961", "imageSR": "2961",
+        "size": f"{size},{size}", "format": "png", "transparent": "true", "f": "image",
+    }
+    try:
+        resp = requests.get(base, params=params, timeout=timeout)
+        resp.raise_for_status()
+        with MemoryFile(resp.content) as mem, mem.open() as src:
+            arr = src.read()  # (bands, H, W); PNG RGBA -> 4 bands
+        h, w = arr.shape[1], arr.shape[2]
+        mask = (arr[3] > 0).astype("uint8") if arr.shape[0] >= 4 else (arr.sum(0) > 0).astype("uint8")
+    except Exception:
+        logger.exception("Flood raster export failed; skipping flood layer")
+        return None
+
+    transform = from_bounds(xmin, ymin, xmax, ymax, w, h)
+    gdf = _mask_to_polygons(mask, transform, WORKING_CRS)
+    if gdf.empty:
+        return None
+    gdf["exclusion_reason"] = "flood_zone"
+    return gdf
+
+
+def ingest_flood(config: Config) -> Path | None:
+    """Ingest coastal-flooding polygons into ``processed/flood.gpkg`` (optional).
+
+    Used automatically as a hard exclusion by the scorer, and clears the
+    'no_flood_data' confidence penalty.
+    """
+    processed = config.paths.processed
+    out_path = processed / "flood.gpkg"
+    if out_path.exists():
+        logger.info("Flood already processed: %s", out_path)
+        return out_path
+
+    gdf = fetch_flood_polygons(config.study_area.bbox)
+    if gdf is None or gdf.empty:
+        logger.info("No flood layer ingested (optional / service unreachable)")
+        return None
+    processed.mkdir(parents=True, exist_ok=True)
+    gdf.to_file(out_path, driver="GPKG")
+    logger.info("Flood processed: %s (%d polygons, %.1f km²)",
+                out_path, len(gdf), gdf.geometry.area.sum() / 1e6)
+    return out_path
+
+
 def ingest_waterbodies(config: Config) -> Path | None:
     """Ingest waterbody polygons (lakes/ponds/ocean) for the buildability mask.
 
@@ -624,6 +708,7 @@ def run_ingest(config: Config, logger: logging.Logger) -> dict[str, Path | None]
     results["land_cover"] = ingest_land_cover(config)
     results["crown_land"] = ingest_crown_land(config)
     results["protected_areas"] = ingest_protected_areas(config)
+    results["flood"] = ingest_flood(config)
     results["waterbodies"] = ingest_waterbodies(config)
     results["parcels"] = ingest_parcels(config)
 

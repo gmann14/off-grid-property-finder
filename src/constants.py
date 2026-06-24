@@ -232,3 +232,12 @@ FLAG_SEVERANCE_CANDIDATE = "severance_candidate"
 # elevation (m) are treated as water/ocean and not buildable. A cheap coastline
 # proxy when no waterbody polygon layer is available.
 SEA_LEVEL_M = 0.0
+
+# Coastal flooding (NS Coastal Program) — a raster MapServer, exported and
+# polygonized into a flood-exclusion layer (processed/flood.gpkg). Worst-case
+# 2100 is the conservative default for a multi-decade off-grid build.
+FLOOD_SERVICE = (
+    "https://nsgiwa.novascotia.ca/arcgis/rest/services/"
+    "OCN/OCN_Projected_Worst_Case_Flooding_2100_UT83/MapServer"
+)
+FLOOD_EXPORT_SIZE = 2048  # px per side over the study bbox (~24m at 50km)
