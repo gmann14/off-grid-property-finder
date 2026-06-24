@@ -216,6 +216,7 @@ pytest tests/test_grid.py # Run specific test file
 - [SPEC.md](SPEC.md) — Full technical specification, scoring methodology, and risk register
 - [DATA-SOURCES.md](DATA-SOURCES.md) — Complete data source inventory with URLs
 - [IMPLEMENTATION-BACKLOG.md](IMPLEMENTATION-BACKLOG.md) — Task breakdown and milestone plan
+- [docs/seasonal-energy-balance.md](docs/seasonal-energy-balance.md) — How hydro/solar/wind complement each other across the year (HYDAT + NASA POWER data)
 
 ## License
 
