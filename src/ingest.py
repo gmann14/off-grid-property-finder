@@ -634,6 +634,67 @@ def fetch_flood_polygons(
     return gdf
 
 
+def ingest_wind(config: Config) -> Path | None:
+    """Ingest Global Wind Atlas mean wind speed (100m) into ``processed/wind.tif``.
+
+    Reads only the study-area window from the remote Canada COG via /vsicurl/
+    range requests (no full download) and reprojects it to a working-CRS grid.
+    Makes the wind scorer use real wind resource instead of the terrain-exposure
+    proxy (and clears the 'wind_proxy_only' confidence penalty).
+    """
+    import os
+
+    import numpy as np
+    import rasterio
+    from rasterio.transform import from_bounds as transform_from_bounds
+    from rasterio.warp import Resampling, reproject
+    from rasterio.windows import from_bounds as window_from_bounds
+    from shapely.geometry import box
+
+    from src.constants import WIND_GWA_URL
+
+    processed = config.paths.processed
+    out_path = processed / "wind.tif"
+    if out_path.exists():
+        logger.info("Wind already processed: %s", out_path)
+        return out_path
+
+    os.environ.setdefault("GDAL_DISABLE_READDIR_ON_OPEN", "EMPTY_DIR")
+    os.environ.setdefault("CPL_VSIL_CURL_ALLOWED_EXTENSIONS", ".tif")
+    bbox = config.study_area.bbox
+    res = float(config.cell_size_m)
+    try:
+        with rasterio.open(f"/vsicurl/{WIND_GWA_URL}") as src:
+            b = gpd.GeoSeries([box(*bbox)], crs=WORKING_CRS).to_crs(src.crs).total_bounds
+            win = window_from_bounds(b[0], b[1], b[2], b[3], src.transform)
+            data = src.read(1, window=win)
+            src_transform = src.window_transform(win)
+            src_crs, src_nodata = src.crs, src.nodata
+    except Exception:
+        logger.exception("GWA wind fetch failed; wind stays on the exposure proxy")
+        return None
+
+    xmin, ymin, xmax, ymax = bbox
+    w, h = int((xmax - xmin) / res), int((ymax - ymin) / res)
+    dst_transform = transform_from_bounds(xmin, ymin, xmax, ymax, w, h)
+    dst = np.full((h, w), np.nan, dtype="float32")
+    reproject(
+        source=data, destination=dst,
+        src_transform=src_transform, src_crs=src_crs,
+        dst_transform=dst_transform, dst_crs=WORKING_CRS,
+        src_nodata=src_nodata, dst_nodata=np.nan, resampling=Resampling.bilinear,
+    )
+    processed.mkdir(parents=True, exist_ok=True)
+    meta = {"driver": "GTiff", "height": h, "width": w, "count": 1, "dtype": "float32",
+            "crs": WORKING_CRS, "transform": dst_transform, "nodata": np.nan, "compress": "lzw"}
+    with rasterio.open(out_path, "w", **meta) as d:
+        d.write(dst, 1)
+    valid = dst[np.isfinite(dst)]
+    logger.info("Wind processed: %s (%dx%d, %.1f-%.1f m/s)", out_path, w, h,
+                float(valid.min()) if valid.size else 0, float(valid.max()) if valid.size else 0)
+    return out_path
+
+
 def ingest_flood(config: Config) -> Path | None:
     """Ingest coastal-flooding polygons into ``processed/flood.gpkg`` (optional).
 
@@ -709,6 +770,7 @@ def run_ingest(config: Config, logger: logging.Logger) -> dict[str, Path | None]
     results["crown_land"] = ingest_crown_land(config)
     results["protected_areas"] = ingest_protected_areas(config)
     results["flood"] = ingest_flood(config)
+    results["wind"] = ingest_wind(config)
     results["waterbodies"] = ingest_waterbodies(config)
     results["parcels"] = ingest_parcels(config)
 

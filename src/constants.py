@@ -94,6 +94,11 @@ WIND_SPEED_THRESHOLDS = [
     (5.5, 6.5, 40),
     (0, 5.5, 15),
 ]
+# Global Wind Atlas mean wind speed at 100m hub height — a Cloud-Optimized
+# GeoTIFF (all of Canada, EPSG:4326, ~250m). Read by windowed /vsicurl/ range
+# requests (no full 1.3GB download) into processed/wind.tif. Free/public.
+WIND_GWA_URL = "https://gwa.cdn.nazkamapps.com/country_tifs_v4/CAN_wind-speed_100m.tif"
+
 # Topographic Position Index (m): cell mean elevation minus surrounding-area
 # mean. Positive = ridge/hilltop (exposed, windy); negative = valley (sheltered).
 EXPOSURE_TPI_THRESHOLDS = [
