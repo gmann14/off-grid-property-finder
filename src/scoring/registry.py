@@ -91,7 +91,8 @@ def compute_composite_score(
         candidates.loc[excluded, "score"] = None
         candidates.loc[excluded, "score_allrounder"] = None
         if "wind_worth_it" in candidates.columns:
-            candidates.loc[excluded, "wind_worth_it"] = None
+            # False (not None) — it's a bool column; excluded cells aren't candidates.
+            candidates.loc[excluded, "wind_worth_it"] = False
         for col in score_cols:
             candidates.loc[excluded, col] = None
 
