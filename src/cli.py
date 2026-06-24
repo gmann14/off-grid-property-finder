@@ -73,14 +73,16 @@ def prepare(ctx: click.Context) -> None:
 
 
 @cli.command()
+@click.option("--limit", type=int, default=None,
+              help="Smoke mode: score only the first N cells (fast end-to-end check)")
 @click.pass_context
-def score(ctx: click.Context) -> None:
+def score(ctx: click.Context, limit: int | None) -> None:
     """Score candidate cells and produce ranked output."""
     from src.score import run_score
 
     cfg = ctx.obj["config"]
     logger = ctx.obj["logger"]
-    run_score(cfg, logger)
+    run_score(cfg, logger, limit=limit)
 
 
 @cli.command()

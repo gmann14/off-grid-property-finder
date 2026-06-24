@@ -26,8 +26,13 @@ from src.scoring.registry import compute_composite_score
 logger = logging.getLogger("property_finder")
 
 
-def run_score(config: Config, logger: logging.Logger) -> None:
-    """Run the full scoring pipeline."""
+def run_score(config: Config, logger: logging.Logger, limit: int | None = None) -> None:
+    """Run the full scoring pipeline.
+
+    ``limit`` scores only the first N candidate cells — a fast smoke check of the
+    whole pipeline (exclusions → score → confidence → parcels → export) before
+    committing to a full ~15-min run.
+    """
     processed = config.paths.processed
     output = config.paths.output
     output.mkdir(parents=True, exist_ok=True)
@@ -39,6 +44,9 @@ def run_score(config: Config, logger: logging.Logger) -> None:
         return
 
     candidates = gpd.read_file(grid_path)
+    if limit is not None and limit > 0:
+        candidates = candidates.iloc[:limit].copy()
+        logger.warning("SMOKE MODE: scoring only %d of the candidate cells", len(candidates))
     logger.info("Loaded %d candidate cells", len(candidates))
 
     # Step 1: Apply exclusions

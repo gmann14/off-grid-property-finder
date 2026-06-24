@@ -10,11 +10,13 @@ wants an exposed ridge/hilltop, not a sheltered valley.
 import logging
 
 import geopandas as gpd
+import numpy as np
 import pandas as pd
 
 from src.config import Config
 from src.constants import EXPOSURE_TPI_THRESHOLDS, WIND_SPEED_THRESHOLDS
 from src.scoring.registry import register
+from src.zonal import grid_zonal_stats
 
 logger = logging.getLogger("property_finder")
 
@@ -37,25 +39,16 @@ def score_wind(candidates: gpd.GeoDataFrame, config: Config) -> pd.Series:
     wind_path = config.paths.processed / "wind.tif"
     exposure_path = config.paths.processed / "exposure.tif"
 
-    try:
-        from rasterstats import zonal_stats
-    except ImportError:
-        logger.warning("rasterstats not installed; wind scores = 0")
-        return pd.Series(0.0, index=candidates.index)
-
     if wind_path.exists():
-        stats = zonal_stats(candidates.geometry, str(wind_path), stats=["mean"])
-        scores = [_lookup_score(s.get("mean") or 0.0, WIND_SPEED_THRESHOLDS) for s in stats]
+        means = grid_zonal_stats(candidates.geometry, wind_path, stats=("mean",))["mean"]
+        scores = [_lookup_score(0.0 if np.isnan(m) else m, WIND_SPEED_THRESHOLDS) for m in means]
         logger.info("Wind: scored from Global Wind Atlas raster")
         return pd.Series(scores, index=candidates.index, dtype=float)
 
     if exposure_path.exists():
-        stats = zonal_stats(candidates.geometry, str(exposure_path), stats=["mean"], nodata=-9999)
-        scores = []
-        for s in stats:
-            tpi = s.get("mean")
-            # No exposure coverage → treat as flat/neutral rather than penalize.
-            scores.append(40 if tpi is None else _lookup_score(tpi, EXPOSURE_TPI_THRESHOLDS))
+        means = grid_zonal_stats(candidates.geometry, exposure_path, stats=("mean",), nodata=-9999)["mean"]
+        # No exposure coverage → treat as flat/neutral rather than penalize.
+        scores = [40 if np.isnan(m) else _lookup_score(m, EXPOSURE_TPI_THRESHOLDS) for m in means]
         logger.info("Wind: no wind raster; scored from terrain exposure (TPI) proxy")
         return pd.Series(scores, index=candidates.index, dtype=float)
 

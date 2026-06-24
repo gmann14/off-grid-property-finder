@@ -13,8 +13,6 @@ import logging
 import geopandas as gpd
 import numpy as np
 import pandas as pd
-import rasterio
-from rasterio.windows import from_bounds
 
 from src.config import Config
 from src.constants import (
@@ -24,6 +22,7 @@ from src.constants import (
     SOLAR_ACCEPTABLE_ASPECT,
 )
 from src.scoring.registry import register
+from src.zonal import grid_zonal_stats
 
 logger = logging.getLogger("property_finder")
 
@@ -33,28 +32,6 @@ def _lookup_score(value: float, thresholds: list[tuple]) -> int:
         if low <= value < high:
             return score
     return 0
-
-
-def _south_fractions(candidates: gpd.GeoDataFrame, aspect_path) -> list[float]:
-    """Fraction of each cell facing roughly south (acceptable solar aspect)."""
-    fractions = [0.0] * len(candidates)
-    if not aspect_path.exists():
-        return fractions
-    acc_lo, acc_hi = SOLAR_ACCEPTABLE_ASPECT
-    with rasterio.open(aspect_path) as asp:
-        nd = asp.nodata
-        for j, geom in enumerate(candidates.geometry):
-            try:
-                win = from_bounds(*geom.bounds, asp.transform)
-                a = asp.read(1, window=win)
-                valid = a != nd if nd is not None else np.ones_like(a, dtype=bool)
-                a = a[valid]
-                if a.size == 0:
-                    continue
-                fractions[j] = float(((a >= acc_lo) & (a <= acc_hi)).mean())
-            except Exception:
-                continue
-    return fractions
 
 
 @register("open_ground")
@@ -67,19 +44,18 @@ def score_open_ground(candidates: gpd.GeoDataFrame, config: Config) -> pd.Series
         logger.warning("Buildability mask not found; open_ground scores = 0")
         return pd.Series(0.0, index=candidates.index)
 
-    try:
-        from rasterstats import zonal_stats
-    except ImportError:
-        logger.warning("rasterstats not installed; open_ground scores = 0")
-        return pd.Series(0.0, index=candidates.index)
+    # Buildable mask is 0/1 (nodata 255) → mean = fraction open/buildable ground.
+    means = grid_zonal_stats(candidates.geometry, mask_path, stats=("mean",), nodata=255)["mean"]
+    base = [0 if np.isnan(m) else _lookup_score(m * 100, OPEN_GROUND_PERCENT_THRESHOLDS) for m in means]
 
-    # Buildable mask is 0/1 (nodata 255) → mean = fraction of cell that is
-    # open, flat, unbuilt, non-water ground.
-    stats = zonal_stats(candidates.geometry, str(mask_path), stats=["mean"], nodata=255)
-    pct = [((s.get("mean") or 0.0) * 100) for s in stats]
-    base = [_lookup_score(p, OPEN_GROUND_PERCENT_THRESHOLDS) for p in pct]
-
-    south = _south_fractions(candidates, aspect_path)
+    # South-facing share of the cell (vectorized fraction in acceptable aspect)
+    if aspect_path.exists():
+        south = grid_zonal_stats(
+            candidates.geometry, aspect_path, stats=("frac",),
+            frac_range=SOLAR_ACCEPTABLE_ASPECT, nodata=-9999,
+        )["frac"]
+    else:
+        south = np.zeros(len(candidates))
 
     scores = [
         min(100.0, b + (OPEN_GROUND_SOUTH_BONUS if frac >= OPEN_GROUND_SOUTH_FRACTION else 0.0))

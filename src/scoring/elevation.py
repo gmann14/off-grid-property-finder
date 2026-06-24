@@ -4,11 +4,13 @@ import logging
 from pathlib import Path
 
 import geopandas as gpd
+import numpy as np
 import pandas as pd
 
 from src.config import Config
 from src.constants import ELEVATION_THRESHOLDS
 from src.scoring.registry import register
+from src.zonal import grid_zonal_stats
 
 logger = logging.getLogger("property_finder")
 
@@ -30,31 +32,14 @@ def score_elevation(candidates: gpd.GeoDataFrame, config: Config) -> pd.Series:
         logger.warning("DEM not found at %s; elevation scores = 0", dem_path)
         return pd.Series(0.0, index=candidates.index)
 
-    try:
-        from rasterstats import zonal_stats
-    except ImportError:
-        logger.warning("rasterstats not installed; elevation scores = 0")
-        return pd.Series(0.0, index=candidates.index)
+    # Fast vectorized zonal mean (nodata read from raster metadata)
+    means = grid_zonal_stats(candidates.geometry, dem_path, stats=("mean",))["mean"]
 
-    # Let rasterstats read nodata from the raster metadata
-    # (HRDEM uses -32767, CDEM uses different values)
-    stats = zonal_stats(
-        candidates.geometry,
-        str(dem_path),
-        stats=["mean"],
-    )
-
-    scores = []
-    no_data_count = 0
-    for stat in stats:
-        mean_elev = stat.get("mean")
-        if mean_elev is None:
-            # No DEM coverage — assign neutral score rather than penalizing
-            scores.append(50)
-            no_data_count += 1
-        else:
-            scores.append(_lookup_score(mean_elev, ELEVATION_THRESHOLDS))
-
+    scores = [
+        50 if np.isnan(m) else _lookup_score(m, ELEVATION_THRESHOLDS)  # no DEM → neutral 50
+        for m in means
+    ]
+    no_data_count = int(np.isnan(means).sum())
     if no_data_count > 0:
         logger.info("Elevation: %d cells had no DEM coverage (assigned neutral score 50)",
                      no_data_count)

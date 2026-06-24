@@ -258,20 +258,17 @@ def score_hydro(candidates: gpd.GeoDataFrame, config: Config) -> pd.Series:
     if has_dem:
         try:
             import rasterio
-            from rasterstats import zonal_stats
+
+            from src.zonal import grid_zonal_stats
 
             dem_src = rasterio.open(dem_path)
 
-            # Precompute elevation range per cell — used as fallback when
-            # along-river DEM sampling has no coverage.
-            zs = zonal_stats(
-                candidates.geometry,
-                str(dem_path),
-                stats=["range"],
-            )
+            # Precompute elevation range per cell (vectorized) — used as fallback
+            # when along-river DEM sampling has no coverage.
+            ranges = grid_zonal_stats(candidates.geometry, dem_path, stats=("range",))["range"]
             cell_zonal = {
-                idx: s.get("range")
-                for idx, s in zip(candidates.index, zs)
+                idx: (None if np.isnan(r) else float(r))
+                for idx, r in zip(candidates.index, ranges)
             }
             n_with_range = sum(1 for v in cell_zonal.values() if v is not None and v > 0)
             logger.info("Hydro: precomputed cell elevation ranges for %d cells", n_with_range)
