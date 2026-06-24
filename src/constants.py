@@ -191,13 +191,13 @@ SOLAR_FLAT_SLOPE = 5  # Below this is considered flat
 DEFAULT_EXCLUSION_OVERLAP_THRESHOLD = 0.5  # 50% overlap triggers exclusion
 
 # --- Parcel / PID integration (Stage B) ------------------------------------
-# NS Property Records Database (NSPRD) parcels are public — both a GeoNOVA
-# vector download and this ArcGIS REST MapServer (limited attribution incl.
-# PID). No NSGI account is required for the boundary + PID layer.
-# The parcel polygon layer id can vary; check the service catalog and override
-# via config if the default returns no polygon features.
+# NS Property Records Database (NSPRD) parcels — queryable polygons WITH a PID
+# field, served by the same public ArcGIS service the Provincial Landscape
+# Viewer (nsgi.novascotia.ca/plv) uses. Host `nsgiwa2` is reachable from the
+# general internet (unlike the internal `gis7.nsgc.gov.ns.ca/ISD_GIS` host,
+# which times out off the NS-gov network). Layer 0 = NSPRD.Property; SR 3857.
 NSPRD_PARCEL_SERVICE = (
-    "https://gis7.nsgc.gov.ns.ca/arcgis/rest/services/ISD_GIS/Property/MapServer"
+    "https://nsgiwa2.novascotia.ca/arcgis/rest/services/PLAN/PLAN_NSPRD_WM84/MapServer"
 )
 NSPRD_PARCEL_LAYER_ID = 0
 NSPRD_PAGE_SIZE = 1000  # records per REST query page
