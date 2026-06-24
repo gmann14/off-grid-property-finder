@@ -503,12 +503,19 @@ def fetch_nsprd_parcels(
     return combined.to_crs(WORKING_CRS)
 
 
-def ingest_parcels(config: Config, source: str = "local") -> Path | None:
+def ingest_parcels(
+    config: Config,
+    source: str = "local",
+    layer_id: int | None = None,
+    base_url: str | None = None,
+) -> Path | None:
     """Ingest NS property parcels (with PID) into ``processed/parcels.gpkg``.
 
     ``source="local"`` reads a downloaded file from ``data/raw/parcels/``
     (GPKG, shapefile, GeoJSON, or File Geodatabase). ``source="rest"`` pulls
-    directly from the public NSPRD ArcGIS service for the study-area bbox.
+    directly from the NSPRD ArcGIS service for the study-area bbox; ``layer_id``
+    / ``base_url`` override the defaults if the parcel polygons live on a
+    different layer/service.
 
     Output carries canonical ``PID`` / ``AAN`` columns and ``area_acres``,
     reprojected to the working CRS and clipped to the study area.
@@ -523,7 +530,7 @@ def ingest_parcels(config: Config, source: str = "local") -> Path | None:
 
     if source == "rest":
         logger.info("Fetching parcels from NSPRD REST service")
-        gdf = fetch_nsprd_parcels(config.study_area.bbox)
+        gdf = fetch_nsprd_parcels(config.study_area.bbox, base_url=base_url, layer_id=layer_id)
         if gdf is None or gdf.empty:
             return None
     else:

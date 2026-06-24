@@ -42,16 +42,22 @@ def ingest(ctx: click.Context) -> None:
 @cli.command("ingest-parcels")
 @click.option(
     "--from-rest", is_flag=True, default=False,
-    help="Pull parcels from the public NSPRD ArcGIS service instead of data/raw/parcels/",
+    help="Pull parcels from the NSPRD ArcGIS service instead of data/raw/parcels/",
 )
+@click.option("--layer", type=int, default=None,
+              help="Override the REST parcel layer id (default 0) if it isn't the parcel polygons")
+@click.option("--service", default=None,
+              help="Override the REST MapServer URL (default: NSPRD ISD_GIS/Property)")
 @click.pass_context
-def ingest_parcels_cmd(ctx: click.Context, from_rest: bool) -> None:
+def ingest_parcels_cmd(ctx: click.Context, from_rest: bool, layer: int | None, service: str | None) -> None:
     """Ingest NS property parcels (with PID) for Stage B aggregation."""
     from src.ingest import ingest_parcels
 
     cfg = ctx.obj["config"]
     logger = ctx.obj["logger"]
-    path = ingest_parcels(cfg, source="rest" if from_rest else "local")
+    path = ingest_parcels(
+        cfg, source="rest" if from_rest else "local", layer_id=layer, base_url=service,
+    )
     if path is None:
         logger.error(
             "Parcel ingestion produced no output. Place a parcel file in "
