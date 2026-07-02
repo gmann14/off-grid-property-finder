@@ -120,6 +120,40 @@ def test_per_cell_flags_plus_global():
     assert result["confidence_band"].iloc[0] == "medium"
 
 
+def test_no_score_columns_present_no_crash():
+    """If score_access/score_hydro aren't present at all (e.g. those criteria
+    are disabled in config), confidence must not crash and no per-cell flags
+    should fire — matches the old cell.get(...) -> None -> notna() -> False path."""
+    gdf = gpd.GeoDataFrame(
+        {"status": ["eligible"], "score": [70.0]},
+        geometry=[box(0, 0, 250, 250)],
+        crs="EPSG:2961",
+    )
+    result = compute_confidence(gdf, _make_config(), data_flags={})
+    assert result["flags"].iloc[0] == ""
+    assert result["confidence"].iloc[0] == 100.0
+
+
+def test_flags_string_content_single_and_combined():
+    """Regression for the vectorized rewrite: the joined flags string must
+    match exactly what the old per-row loop produced — single flag as-is, both
+    flags joined with '; ', and no flag when neither condition applies."""
+    gdf = gpd.GeoDataFrame(
+        {
+            "status": ["eligible"] * 3,
+            "score": [80.0, 60.0, 40.0],
+            "score_access": [100.0, 20.0, 100.0],   # none / unverified / none
+            "score_hydro": [40.0, 0.0, 0.0],         # none / low / low
+        },
+        geometry=[box(0, 0, 250, 250), box(250, 0, 500, 250), box(500, 0, 750, 250)],
+        crs="EPSG:2961",
+    )
+    result = compute_confidence(gdf, _make_config(), data_flags={})
+    assert result["flags"].iloc[0] == ""
+    assert result["flags"].iloc[1] == "access_unverified; hydro_low_confidence"
+    assert result["flags"].iloc[2] == "hydro_low_confidence"
+
+
 def test_mixed_cells_different_confidence():
     """Different cells should get different confidence based on their flags."""
     gdf = gpd.GeoDataFrame(

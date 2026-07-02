@@ -3,6 +3,7 @@
 import logging
 
 import geopandas as gpd
+import numpy as np
 import pandas as pd
 
 from src.config import Config
@@ -53,44 +54,46 @@ def compute_confidence(
             confidence -= deductions[flag]
             logger.info("Confidence deduction: %s (-%d)", flag, deductions[flag])
 
-    # Per-cell flags and deductions
-    flags_col = []
-    for idx, cell in candidates.iterrows():
-        cell_flags = []
+    # Per-cell flags and deductions — vectorized (was a per-row iterrows loop).
+    # access_score/hydro_score default to an all-NaN Series when the column is
+    # absent, so pd.notna() below is False everywhere, matching the old
+    # cell.get(...) -> None -> pd.notna(None) -> False behavior.
+    access_score = candidates.get("score_access", pd.Series(np.nan, index=candidates.index))
+    hydro_score = candidates.get("score_hydro", pd.Series(np.nan, index=candidates.index))
 
-        # Access unverified flag (pd.notna guards against NaN sub-scores, not
-        # just None — an excluded/missing score is NaN, where `< x` is False)
-        access_score = cell.get("score_access")
-        if pd.notna(access_score) and access_score < ACCESS_FLAG_THRESHOLD:
-            cell_flags.append(FLAG_ACCESS_UNVERIFIED)
+    flag_masks = [
+        (pd.notna(access_score) & (access_score < ACCESS_FLAG_THRESHOLD), FLAG_ACCESS_UNVERIFIED),
+        (pd.notna(hydro_score) & (hydro_score == 0), FLAG_HYDRO_LOW_CONFIDENCE),
+    ]
 
-        # Hydro low confidence flag
-        hydro_score = cell.get("score_hydro")
-        if pd.notna(hydro_score) and hydro_score == 0:
-            cell_flags.append(FLAG_HYDRO_LOW_CONFIDENCE)
+    for mask, flag in flag_masks:
+        if flag in PER_CELL_DEDUCTIONS:
+            confidence = confidence.where(~mask, confidence - PER_CELL_DEDUCTIONS[flag])
 
-        # Apply per-cell deductions
-        for flag in cell_flags:
-            if flag in PER_CELL_DEDUCTIONS:
-                confidence.at[idx] -= PER_CELL_DEDUCTIONS[flag]
-
-        flags_col.append("; ".join(cell_flags) if cell_flags else "")
-
+    # Build the semicolon-joined flags string per cell via a fold: at each step,
+    # concatenate with "; " only where both sides are non-empty.
+    flags_col = pd.Series("", index=candidates.index, dtype="object")
+    for mask, flag in flag_masks:
+        addition = pd.Series(np.where(mask, flag, ""), index=candidates.index)
+        flags_col = pd.Series(
+            np.where(
+                (flags_col != "") & (addition != ""), flags_col + "; " + addition,
+                np.where(flags_col != "", flags_col, addition),
+            ),
+            index=candidates.index,
+        )
     candidates["flags"] = flags_col
 
     # Clamp confidence
     confidence = confidence.clip(lower=0)
     candidates["confidence"] = confidence
 
-    # Assign bands
-    bands = []
-    for conf in confidence:
-        band = "low"
-        for low, high, label in CONFIDENCE_BANDS:
-            if low <= conf <= high:
-                band = label
-                break
-        bands.append(band)
+    # Assign bands — reversed so the FIRST matching entry in CONFIDENCE_BANDS
+    # wins (matches the old break-on-first-match loop) even if a custom config
+    # ever supplies overlapping ranges; later assignments overwrite earlier ones.
+    bands = pd.Series("low", index=candidates.index, dtype="object")
+    for low, high, label in reversed(CONFIDENCE_BANDS):
+        bands[(confidence >= low) & (confidence <= high)] = label
     candidates["confidence_band"] = bands
 
     # Null out confidence for excluded cells

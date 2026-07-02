@@ -65,3 +65,46 @@ def test_apply_exclusions_overlap_threshold():
     result = apply_exclusions(grid, exclusions, overlap_threshold=0.5)
     # Overlap = 200*200 = 40000, Cell = 250*250 = 62500, ratio = 0.64 > 0.5
     assert result["status"].iloc[0] == "excluded"
+    assert "flood_zone" in result["exclusion_reasons"].iloc[0]
+
+
+def test_apply_exclusions_overlap_below_threshold_stays_eligible():
+    """Regression for the spatial-join rewrite: cells that touch an exclusion
+    polygon but don't clear the overlap threshold must stay eligible — the
+    sjoin pre-filter must not itself decide exclusion, only narrow candidates."""
+    xmin, ymin = BBOX[0], BBOX[1]
+    grid = gpd.GeoDataFrame(geometry=[box(xmin, ymin, xmin + 250, ymin + 250)], crs=CRS)
+    # Small corner overlap only: 20x20 = 400 out of 62500 -> ~0.6%, well under 50%
+    exclusions = gpd.GeoDataFrame(
+        {"exclusion_reason": ["flood_zone"]},
+        geometry=[box(xmin - 10, ymin - 10, xmin + 10, ymin + 10)],
+        crs=CRS,
+    )
+    result = apply_exclusions(grid, exclusions, overlap_threshold=0.5)
+    assert result["status"].iloc[0] == "eligible"
+
+
+def test_apply_exclusions_sums_overlap_across_multiple_polygons():
+    """A cell overlapping TWO separate exclusion polygons, each below threshold
+    alone, must be excluded once their combined overlap clears the threshold —
+    and both reasons must appear (tests the groupby-sum + reason-union path)."""
+    xmin, ymin = BBOX[0], BBOX[1]
+    grid = gpd.GeoDataFrame(geometry=[box(xmin, ymin, xmin + 250, ymin + 250)], crs=CRS)
+    # Two horizontal strips (top + bottom) that straddle the cell but neither
+    # contains its centroid (at y=125) — so this must be decided by the OVERLAP
+    # path, not the centroid-containment check (which runs first and would
+    # otherwise mask a bug in the overlap path).
+    exclusions = gpd.GeoDataFrame(
+        {"exclusion_reason": ["flood_zone", "protected_area"]},
+        geometry=[
+            box(xmin, ymin, xmin + 250, ymin + 70),          # bottom: 250x70=17500 (28%)
+            box(xmin, ymin + 180, xmin + 250, ymin + 250),   # top: 250x70=17500 (28%)
+        ],
+        crs=CRS,
+    )
+    result = apply_exclusions(grid, exclusions, overlap_threshold=0.5)
+    # Combined overlap = 35000 / 62500 = 0.56 >= 0.5
+    assert result["status"].iloc[0] == "excluded"
+    reasons = result["exclusion_reasons"].iloc[0]
+    assert "flood_zone" in reasons and "protected_area" in reasons
+    assert result["status"].iloc[0] == "excluded"

@@ -83,20 +83,33 @@ def apply_exclusions(
         candidates.loc[idx, "status"] = "excluded"
         candidates.loc[idx, "exclusion_reasons"] = "; ".join(reasons)
 
-    # Check overlap fraction for cells not already excluded
+    # Check overlap fraction for cells not already excluded.
+    #
+    # Previously this intersected every eligible cell against every exclusion
+    # polygon (O(cells x exclusion_features) — e.g. ~40k cells x ~2k flood
+    # polygons). A spatial join (STRtree-accelerated) first narrows this down
+    # to only the cell/exclusion pairs that actually touch — cells fully
+    # inside or fully outside an exclusion never reach the exact-area step —
+    # then exact intersection area is computed once per matched pair via a
+    # vectorized elementwise GeoSeries.intersection(), not a per-cell loop.
     eligible_mask = candidates["status"] == "eligible"
-    if eligible_mask.any() and not exclusions.empty:
-        eligible = candidates[eligible_mask]
-        for idx, cell in eligible.iterrows():
-            cell_area = cell.geometry.area
-            if cell_area == 0:
-                continue
-            overlap = exclusions.intersection(cell.geometry)
-            overlap_area = overlap.area.sum()
-            if overlap_area / cell_area >= overlap_threshold:
-                reasons = exclusions[overlap.area > 0]["exclusion_reason"].unique()
-                candidates.loc[idx, "status"] = "excluded"
-                candidates.loc[idx, "exclusion_reasons"] = "; ".join(reasons)
+    if eligible_mask.any():
+        eligible = candidates.loc[eligible_mask, ["geometry"]]
+        pairs = gpd.sjoin(eligible, exclusions, how="inner", predicate="intersects")
+        if not pairs.empty:
+            left = candidates.geometry.reindex(pairs.index)
+            right = exclusions.geometry.reindex(pairs["index_right"].values)
+            right.index = pairs.index
+            pairs = pairs.assign(_overlap_area=left.intersection(right).area.values)
+
+            for idx, group in pairs.groupby(pairs.index):
+                cell_area = candidates.geometry.loc[idx].area
+                if cell_area == 0:
+                    continue
+                if group["_overlap_area"].sum() / cell_area >= overlap_threshold:
+                    reasons = group.loc[group["_overlap_area"] > 0, "exclusion_reason"].unique()
+                    candidates.loc[idx, "status"] = "excluded"
+                    candidates.loc[idx, "exclusion_reasons"] = "; ".join(reasons)
 
     excluded_count = (candidates["status"] == "excluded").sum()
     logger.info("Excluded %d of %d candidate cells", excluded_count, len(candidates))

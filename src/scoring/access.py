@@ -6,7 +6,6 @@ from pathlib import Path
 import geopandas as gpd
 import numpy as np
 import pandas as pd
-from shapely.geometry import Point
 from shapely.strtree import STRtree
 
 from src.config import Config
@@ -32,33 +31,34 @@ def _compute_min_distances(
 ) -> pd.Series:
     """Compute minimum distance from each cell centroid to nearest feature.
 
-    Uses spatial index for efficiency. Returns 0 if a feature intersects the cell.
+    Uses two bulk STRtree queries (not a per-cell Python loop). Returns 0 if a
+    feature intersects the cell POLYGON itself — not just near the centroid,
+    so a road crossing a far corner of a large cell still counts as direct
+    access — else the nearest feature's distance to the centroid within
+    `max_dist`, else inf.
     """
-    centroids = candidates.geometry.centroid
+    n = len(candidates)
+    distances = np.full(n, np.inf)
+    if features.empty:
+        return pd.Series(distances, index=candidates.index)
 
-    # Build spatial index on features
     tree = STRtree(features.geometry.values)
 
-    distances = []
-    for idx, (centroid, cell_geom) in enumerate(zip(centroids, candidates.geometry)):
-        # Check intersection first (buffer by 0 to handle edge cases)
-        nearby_idxs = tree.query(cell_geom, predicate="intersects")
-        if len(nearby_idxs) > 0:
-            distances.append(0.0)
-            continue
+    # Step 1: cells whose polygon intersects any feature directly -> 0.
+    cell_geoms = candidates.geometry.values
+    inter = tree.query(cell_geoms, predicate="intersects")
+    if inter.size:
+        distances[np.unique(inter[0])] = 0.0
 
-        # Query within max_dist buffer
-        buffered = centroid.buffer(max_dist)
-        nearby_idxs = tree.query(buffered, predicate="intersects")
-        if len(nearby_idxs) == 0:
-            distances.append(float("inf"))
-            continue
-
-        min_d = min(
-            centroid.distance(features.geometry.iloc[i])
-            for i in nearby_idxs
+    # Step 2: remaining cells — nearest feature to centroid, within max_dist
+    # (beyond that, query_nearest simply omits the point, leaving it at inf).
+    remaining = np.where(np.isinf(distances))[0]
+    if remaining.size:
+        centroids = candidates.geometry.centroid.values[remaining]
+        idx, dist = tree.query_nearest(
+            centroids, max_distance=max_dist, all_matches=False, return_distance=True
         )
-        distances.append(min_d)
+        distances[remaining[idx[0]]] = dist
 
     return pd.Series(distances, index=candidates.index)
 

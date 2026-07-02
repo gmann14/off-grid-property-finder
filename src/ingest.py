@@ -690,8 +690,12 @@ def fetch_flood_polygons(
 
     transform = from_bounds(xmin, ymin, xmax, ymax, w, h)
     gdf = _mask_to_polygons(mask, transform, working_crs)
-    if gdf.empty:
-        return None
+    # An empty result here means the export SUCCEEDED and genuinely found no
+    # flooded pixels — distinct from the `None`-on-exception case above, which
+    # means the fetch itself failed. Callers must be able to tell "checked, all
+    # clear" from "couldn't check" (empty vs. None), so return the empty
+    # GeoDataFrame rather than collapsing both cases to None. (Assigning a
+    # scalar to a 0-row GeoDataFrame column is a safe no-op.)
     gdf["exclusion_reason"] = "flood_zone"
     return gdf
 
@@ -771,13 +775,23 @@ def ingest_flood(config: Config) -> Path | None:
         return out_path
 
     gdf = fetch_flood_polygons(config.study_area.bbox, working_crs=config.working_crs)
-    if gdf is None or gdf.empty:
-        logger.info("No flood layer ingested (optional / service unreachable)")
+    if gdf is None:
+        # Fetch failed (network/service issue) — genuinely unknown, so don't
+        # cache anything; the next run will retry rather than being stuck
+        # believing "no flood zones" from a stale/wrong result.
+        logger.info("Flood layer not ingested (service unreachable) — will retry next run")
         return None
+
     processed.mkdir(parents=True, exist_ok=True)
     gdf.to_file(out_path, driver="GPKG")
-    logger.info("Flood processed: %s (%d polygons, %.1f km²)",
-                out_path, len(gdf), gdf.geometry.area.sum() / 1e6)
+    if gdf.empty:
+        # Export succeeded and genuinely found no flooded pixels in this bbox —
+        # cache that (empty) result so confidence isn't penalized for "no flood
+        # data" and so this doesn't re-hit the network on every future run.
+        logger.info("Flood processed: %s (0 polygons — no flooding found in study area)", out_path)
+    else:
+        logger.info("Flood processed: %s (%d polygons, %.1f km²)",
+                    out_path, len(gdf), gdf.geometry.area.sum() / 1e6)
     return out_path
 
 
