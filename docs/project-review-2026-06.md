@@ -8,6 +8,46 @@ open design questions, and a prioritized roadmap.
 **State at review time:** 126 tests passing (~3s), full score run ~2 min,
 8,980 PID-keyed parcels ranked, all five criteria on real data (no proxies).
 
+## Update (2026-07-02): §3–§8 items addressed
+
+Every "now/next" quick win, plus the CI/lockfile and calibration-adjacent test
+gaps, from the roadmap below were implemented and merged (commits `d5aac1b`
+through `80405ca`, 184 tests, CI green on GitHub Actions for every commit):
+
+- **§3 reliability risks:** manifest-based stale-cache guard + `--force`
+  (`src/manifest.py`); ArcGIS error-JSON detection + PID-coverage assertion in
+  the NSPRD fetch; flood empty-vs-failed distinction (cached sentinel vs retry).
+- **§4 testing/CI:** GitHub Actions workflow + pinned `requirements-lock.txt`;
+  added the top five missing-test categories (NSPRD fetch mocked, zonal-stats
+  parity vs rasterstats, `run_visualize` smoke tests, `ingest_wind` mocked,
+  CLI `--force`/`--layer`/`--service` behavior) — net +58 tests (126 → 184).
+- **§5 bugs/hygiene:** fixed `analyze.py`'s SCORE_COLUMNS drift; declared the
+  missing `scipy` dependency; dissolved parcels by PID (8,980 rows / 8,840
+  unique → 8,840/8,840, zero duplicates); wired `config.working_crs` through
+  ingest (was decorative); deleted dead `clip.py`/`crs.py`; fixed README/
+  `check_data.py`/CLI doc drift; trimmed `map.html` 59.1MB → 42.4MB by
+  dropping unscored parcels from the parcel layer.
+- **§7 performance:** vectorized `compute_confidence` (was iterrows);
+  spatial-indexed `apply_exclusions`' overlap path (was O(cells×exclusions),
+  verified against real data: identical 1,079-cell exclusion count, 0.67s);
+  bulk-STRtree `access.py` distance computation (was a per-cell loop, had zero
+  prior test coverage).
+
+**A live example of the exact staleness problem this review warned about:**
+regenerating the `results/` snapshot surfaced that the PID-dissolve fix had
+been written but never actually applied — `data/processed/parcels.gpkg` was
+cached from *before* the fix existed, so `ingest_parcels`'s skip-if-exists
+check meant the dissolve logic never ran against it. The new manifest system
+doesn't catch this class of staleness (it tracks config drift, not ingestion-
+*code* changes) — worth remembering as a residual gap, not a false claim of
+completeness.
+
+**What's still open:** the §8 "soon"/"later" roadmap items — `export-snapshot`
+CLI, run provenance metadata, the calibration harness (still the single
+biggest open question — the ranking has never been checked against a known
+site), HYDAT-based low-flow regression, civic-address ingestion, per-energy
+ranked lists, PVSC join, and the rest. See §8 below, unchanged.
+
 ---
 
 ## 1. What we built (context)
