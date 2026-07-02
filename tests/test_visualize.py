@@ -11,7 +11,7 @@ import geopandas as gpd
 from shapely.geometry import LineString, box
 
 from src.config import Config, Paths, StudyArea
-from src.visualize import run_visualize
+from src.visualize import _add_parcels, run_visualize
 
 CRS = "EPSG:2961"
 BBOX = (380000.0, 4900000.0, 381000.0, 4901000.0)
@@ -104,3 +104,49 @@ def test_run_visualize_includes_optional_layers_when_present(tmp_path):
     assert "Streams &amp; Rivers" in html or "Streams & Rivers" in html
     assert "Roads" in html
     assert "Scored Parcels (PID)" in html
+
+
+def test_add_parcels_drops_unscored_rows(tmp_path):
+    """Regression for the map-size fix: on the real study area, unscored
+    parcels (no candidate cells assigned) outnumbered scored ones ~4:1 and
+    rendered near-invisible — pure payload bloat with zero information value.
+    Only scored parcels should reach the map."""
+    import folium
+
+    xmin, ymin, xmax, ymax = BBOX
+    step = (xmax - xmin) / 4
+    parcels_path = tmp_path / "scored_parcels.gpkg"
+    gpd.GeoDataFrame(
+        {
+            "PID": ["60010001", "60010002", "60010003", "60010004"],
+            "score": [88.0, None, 72.0, None],  # 2 scored, 2 unscored
+        },
+        geometry=[box(xmin + i * step, ymin, xmin + (i + 1) * step, ymax) for i in range(4)],
+        crs=CRS,
+    ).to_file(parcels_path, driver="GPKG")
+
+    m = folium.Map(location=[44.4, -64.5], zoom_start=11)
+    _add_parcels(m, parcels_path)
+    folium.LayerControl().add_to(m)
+    html = m.get_root().render()
+
+    assert "60010001" in html
+    assert "60010003" in html
+    assert "60010002" not in html
+    assert "60010004" not in html
+
+
+def test_add_parcels_no_score_column_includes_all(tmp_path):
+    """If a caller passes a parcels file with no 'score' column at all (not
+    the normal path, but shouldn't crash), nothing should be filtered."""
+    import folium
+
+    parcels_path = tmp_path / "parcels_no_score.gpkg"
+    gpd.GeoDataFrame(
+        {"PID": ["60010001"]}, geometry=[box(*BBOX)], crs=CRS,
+    ).to_file(parcels_path, driver="GPKG")
+
+    m = folium.Map(location=[44.4, -64.5], zoom_start=11)
+    _add_parcels(m, parcels_path)  # must not raise
+    folium.LayerControl().add_to(m)
+    assert "60010001" in m.get_root().render()

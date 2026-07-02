@@ -406,10 +406,25 @@ def _add_buildings(m, buildings_path: Path):
 
 
 def _add_parcels(m, parcels_path: Path):
-    """Add scored parcels (Stage B) colored by parcel score, PID in tooltip."""
+    """Add scored parcels (Stage B) colored by parcel score, PID in tooltip.
+
+    Only parcels with an actual score are included. Unscored parcels (no
+    candidate cells assigned — the common case: a bbox pull returns every
+    parcel in the study area, but only a fraction overlap the eligible
+    candidate grid) render as near-invisible and carry no useful PID/score
+    info, so including them was pure payload bloat: on the real study area
+    this cut the parcel layer from 42,010 rows to 8,980 (and the overall
+    map.html from ~59MB toward a fraction of that).
+    """
     import folium
 
     parcels = gpd.read_file(parcels_path)
+    if "score" in parcels.columns:
+        n_before = len(parcels)
+        parcels = parcels[parcels["score"].notna()].copy()
+        if len(parcels) < n_before:
+            logger.info("Parcel layer: dropped %d unscored parcels (kept %d)",
+                        n_before - len(parcels), len(parcels))
     parcels = parcels.to_crs("EPSG:4326")
     parcels.geometry = parcels.geometry.simplify(tolerance=0.00002)
 
