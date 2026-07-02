@@ -30,6 +30,8 @@ Raw GIS Data → Ingest & Reproject → DEM Derivatives → Masks → 250m Grid
 python3.12 -m venv .venv
 source .venv/bin/activate
 pip install -e ".[dev]"
+# or, for the exact versions CI tests against:
+#   pip install -r requirements-lock.txt && pip install -e . --no-deps
 
 # Place raw GIS data in data/raw/ (see Data section below)
 
