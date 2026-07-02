@@ -47,7 +47,7 @@ def ingest(ctx: click.Context) -> None:
 @click.option("--layer", type=int, default=None,
               help="Override the REST parcel layer id (default 0) if it isn't the parcel polygons")
 @click.option("--service", default=None,
-              help="Override the REST MapServer URL (default: NSPRD ISD_GIS/Property)")
+              help="Override the REST MapServer URL (default: NSPRD PLAN_NSPRD_WM84 via nsgiwa2)")
 @click.pass_context
 def ingest_parcels_cmd(ctx: click.Context, from_rest: bool, layer: int | None, service: str | None) -> None:
     """Ingest NS property parcels (with PID) for Stage B aggregation."""

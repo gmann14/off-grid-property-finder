@@ -2,7 +2,7 @@
 
 Rank Nova Scotia land for off-grid living suitability using geospatial analysis.
 
-Generates a 250m candidate grid over a configurable study area, scores each cell across five criteria (micro-hydro potential, elevation safety, road access, solar exposure, and buildable area), and produces ranked output as CSV, GeoJSON, and an interactive Folium map.
+Generates a 250m candidate grid over a configurable study area, scores each cell across five criteria (micro-hydro potential, road access, open ground for solar/building, wind resource, and coastal-flood-safe elevation), and produces ranked output as CSV, GeoJSON, and an interactive Folium map.
 
 Built for screening rural Nova Scotia land — particularly the south shore near Lunenburg — for residential off-grid potential with an emphasis on micro-hydro power.
 
@@ -115,9 +115,9 @@ Place raw data in `data/raw/` subdirectories:
 | `land-cover/` | Land cover polygons (Shapefile) | [NSTDB](https://nsgi.novascotia.ca/WSF_DDS/DDS.svc/DownloadFile?tkey=fhrTtdnDvfytwLz6&id=13) | Yes |
 | `exclusions/` | Protected areas, flood zones | [GeoNova](https://geonova.novascotia.ca/geodata/) | Recommended |
 | `crown-land/` | Crown land parcels (Shapefile) | [NS Open Data](https://data.novascotia.ca/Lands-Forests-and-Wildlife/Crown-Land/3nka-59nz) | Optional |
-| `parcels/` | Property parcels with PID (NSPRD) | [GeoNOVA](https://geonova.novascotia.ca/nova-scotia-property-records-parcels) (**fee/restricted, login**) or `ingest-parcels --from-rest` (NS-network only); for a few parcels use ViewPoint/PVSC lookups | Stage B (PIDs) |
+| `parcels/` | Property parcels with PID (NSPRD) | `ingest-parcels --from-rest` (free, public — see DATA-SOURCES §5.1) or [GeoNOVA](https://geonova.novascotia.ca/nova-scotia-property-records-parcels) (fee/restricted bulk download); for a few parcels use ViewPoint/PVSC lookups | Stage B (PIDs) |
 
-Raw data files are not committed to the repo. The processed files in `data/processed/` contain everything the pipeline needs for scoring. To re-ingest from scratch (e.g., to change the study area), re-download the raw files from the links above and run `python -m src prepare`.
+Neither `data/raw/` nor `data/processed/` is committed to the repo (both are gitignored) — a fresh clone must run `prepare` before scoring. Flood (NS Coastal Program) and wind (Global Wind Atlas) need no raw download at all: `prepare`/`ingest` fetch them directly into `data/processed/` from public services. To re-ingest from scratch (e.g., to change the study area), delete `data/processed/`, place the raw files above in `data/raw/`, and run `python -m src prepare`.
 
 See [DATA-SOURCES.md](DATA-SOURCES.md) for the full data source inventory.
 
@@ -191,7 +191,7 @@ tests/
 
 ```sh
 source .venv/bin/activate
-pytest                    # Run all 104 tests
+pytest                    # Run the test suite
 pytest -v                 # Verbose output
 pytest tests/test_grid.py # Run specific test file
 ```

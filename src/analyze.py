@@ -13,11 +13,12 @@ logger = logging.getLogger("property_finder")
 
 SCORE_COLUMNS = [
     "score_hydro",
-    "score_solar",
-    "score_elevation",
     "score_access",
-    "score_buildable",
+    "score_open_ground",
+    "score_wind",
+    "score_elevation",
     "score",
+    "score_allrounder",
 ]
 
 CONFIDENCE_COLUMN = "confidence"

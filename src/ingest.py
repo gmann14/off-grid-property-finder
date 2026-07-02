@@ -22,18 +22,18 @@ def _bbox_to_geodataframe(bbox: tuple, crs: str) -> gpd.GeoDataFrame:
     return gpd.GeoDataFrame(geometry=[box(*bbox)], crs=crs)
 
 
-def _reproject_to_working(gdf: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
+def _reproject_to_working(gdf: gpd.GeoDataFrame, working_crs: str = WORKING_CRS) -> gpd.GeoDataFrame:
     """Reproject a GeoDataFrame to the working CRS, handling compound CRS."""
     if gdf.crs is None:
         raise ValueError("GeoDataFrame has no CRS")
     try:
         epsg = gdf.crs.to_epsg()
-        if epsg == 2961:
+        if epsg == int(working_crs.split(":")[1]):
             return gdf
     except Exception:
         pass
     # Compound CRS (e.g., NAD83(CSRS)v6 + CGVD2013) — extract horizontal
-    return gdf.to_crs(WORKING_CRS)
+    return gdf.to_crs(working_crs)
 
 
 def ingest_dem(config: Config) -> Path | None:
@@ -44,6 +44,7 @@ def ingest_dem(config: Config) -> Path | None:
     """
     raw = config.paths.raw
     processed = config.paths.processed
+    working_crs = config.working_crs
     out_path = processed / "dem.tif"
 
     if out_path.exists():
@@ -70,10 +71,10 @@ def ingest_dem(config: Config) -> Path | None:
     with rasterio.open(src_path) as src:
         # Reproject to working CRS
         transform, width, height = calculate_default_transform(
-            src.crs, WORKING_CRS, src.width, src.height, *src.bounds
+            src.crs, working_crs, src.width, src.height, *src.bounds
         )
         kwargs = src.meta.copy()
-        kwargs.update(crs=WORKING_CRS, transform=transform, width=width, height=height)
+        kwargs.update(crs=working_crs, transform=transform, width=width, height=height)
 
         # Reproject full raster first
         reproj_path = processed / "dem_reproj.tif"
@@ -86,7 +87,7 @@ def ingest_dem(config: Config) -> Path | None:
                     src_transform=src.transform,
                     src_crs=src.crs,
                     dst_transform=transform,
-                    dst_crs=WORKING_CRS,
+                    dst_crs=working_crs,
                     resampling=Resampling.bilinear,
                 )
 
@@ -146,7 +147,7 @@ def ingest_streams(config: Config) -> Path | None:
             return None
         gdf = gpd.read_file(shp_candidates[0])
 
-    gdf = _reproject_to_working(gdf)
+    gdf = _reproject_to_working(gdf, config.working_crs)
 
     # Clip to study area
     bbox_geom = box(*config.study_area.bbox)
@@ -176,7 +177,7 @@ def ingest_roads_from_osm(config: Config) -> Path | None:
             candidates = list((raw / "roads").glob(ext))
             if candidates:
                 gdf = gpd.read_file(candidates[0])
-                gdf = _reproject_to_working(gdf)
+                gdf = _reproject_to_working(gdf, config.working_crs)
                 bbox_geom = box(*config.study_area.bbox)
                 gdf = gdf[gdf.intersects(bbox_geom)].copy()
                 processed.mkdir(parents=True, exist_ok=True)
@@ -196,7 +197,7 @@ def ingest_roads_from_osm(config: Config) -> Path | None:
     road_mask = gdf["highway"].notna()
     gdf = gdf[road_mask].copy()
 
-    gdf = gdf.to_crs(WORKING_CRS)
+    gdf = gdf.to_crs(config.working_crs)
 
     # Clip to study area
     bbox_geom = box(*config.study_area.bbox)
@@ -231,7 +232,7 @@ def ingest_buildings(config: Config) -> Path | None:
     logger.info("Ingesting buildings from %s", src_file)
 
     gdf = gpd.read_file(src_file)
-    gdf = _reproject_to_working(gdf)
+    gdf = _reproject_to_working(gdf, config.working_crs)
 
     # Clip to study area
     bbox_geom = box(*config.study_area.bbox)
@@ -264,7 +265,7 @@ def ingest_land_cover(config: Config) -> Path | None:
     logger.info("Ingesting land cover from %s", src_file)
 
     gdf = gpd.read_file(src_file)
-    gdf = _reproject_to_working(gdf)
+    gdf = _reproject_to_working(gdf, config.working_crs)
 
     # Clip to study area
     bbox_geom = box(*config.study_area.bbox)
@@ -295,7 +296,7 @@ def ingest_crown_land(config: Config) -> Path | None:
     logger.info("Ingesting Crown land from %s", src_file)
 
     gdf = gpd.read_file(src_file)
-    gdf = _reproject_to_working(gdf)
+    gdf = _reproject_to_working(gdf, config.working_crs)
 
     # Clip to study area
     bbox_geom = box(*config.study_area.bbox)
@@ -327,7 +328,7 @@ def ingest_protected_areas(config: Config) -> Path | None:
     logger.info("Ingesting protected areas from %s", src_file)
 
     gdf = gpd.read_file(src_file)
-    gdf = _reproject_to_working(gdf)
+    gdf = _reproject_to_working(gdf, config.working_crs)
 
     # Clip to study area
     bbox_geom = box(*config.study_area.bbox)
@@ -393,6 +394,35 @@ def _normalize_parcel_fields(gdf: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
     return gdf
 
 
+def _dissolve_by_pid(gdf: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
+    """Merge multiple polygon records for the same PID into one row.
+
+    NSPRD can serve more than one polygon per PID, and clipping to the study
+    bbox can split a parcel across the boundary into fragments. Without this,
+    one property occupies multiple ranked rows, each with fragment-level
+    acreage (undercounting parcels that straddle the bbox edge). Rows with a
+    blank PID are left as-is — they can't be reliably deduplicated.
+    """
+    import pandas as pd
+
+    if "PID" not in gdf.columns:
+        return gdf
+    has_pid = gdf["PID"].astype(bool)
+    if not has_pid.any():
+        return gdf
+
+    n_before = int(has_pid.sum())
+    with_pid = gdf[has_pid].dissolve(by="PID", as_index=False, aggfunc="first")
+    without_pid = gdf[~has_pid]
+    merged = gpd.GeoDataFrame(
+        pd.concat([with_pid, without_pid], ignore_index=True), crs=gdf.crs
+    )
+    n_after = int((merged["PID"].astype(bool)).sum())
+    if n_after < n_before:
+        logger.info("Dissolved %d fragment(s) into %d unique PIDs", n_before, n_after)
+    return merged
+
+
 def _build_nsprd_query_url(
     base_url: str, layer_id: int, bbox_4326: tuple, offset: int, count: int
 ) -> str:
@@ -434,13 +464,14 @@ def fetch_nsprd_parcels(
     layer_id: int | None = None,
     page_size: int | None = None,
     timeout: int = 60,
+    working_crs: str = WORKING_CRS,
 ) -> gpd.GeoDataFrame | None:
     """Fetch NSPRD parcel polygons (with PID) from the public ArcGIS REST service.
 
     Queries by the study-area bounding box, paginating until the server stops
     returning a full page. Network-dependent and best-effort: returns ``None``
     on any failure so the caller can fall back to a local file. Geometry is
-    reprojected to the working CRS.
+    reprojected to ``working_crs``.
     """
     from src.constants import (
         NSPRD_PAGE_SIZE,
@@ -460,7 +491,7 @@ def fetch_nsprd_parcels(
 
     # Service expects the query envelope in lat/lon (inSR=4326).
     bbox_4326 = tuple(
-        gpd.GeoSeries([box(*bbox_working)], crs=WORKING_CRS)
+        gpd.GeoSeries([box(*bbox_working)], crs=working_crs)
         .to_crs("EPSG:4326")
         .total_bounds
     )
@@ -476,6 +507,17 @@ def fetch_nsprd_parcels(
             resp = requests.get(url, timeout=timeout)
             resp.raise_for_status()
             payload = resp.json()
+            # ArcGIS servers can return HTTP 200 with an error body (throttling,
+            # timeout, bad params). Treating that like an empty/end-of-data page
+            # would silently return a truncated (but seemingly complete) result —
+            # abort the whole fetch instead so a partial parcel set never gets
+            # written and cached as if it were the full study area.
+            if isinstance(payload, dict) and payload.get("error"):
+                logger.error(
+                    "NSPRD REST returned an error at offset %d: %s",
+                    offset, payload["error"].get("message", payload["error"]),
+                )
+                return None
             page = _features_to_gdf(payload)
             if page.empty:
                 break
@@ -500,7 +542,7 @@ def fetch_nsprd_parcels(
     combined = gpd.GeoDataFrame(
         pd.concat(pages, ignore_index=True), crs="EPSG:4326"
     )
-    return combined.to_crs(WORKING_CRS)
+    return combined.to_crs(working_crs)
 
 
 def ingest_parcels(
@@ -530,7 +572,10 @@ def ingest_parcels(
 
     if source == "rest":
         logger.info("Fetching parcels from NSPRD REST service")
-        gdf = fetch_nsprd_parcels(config.study_area.bbox, base_url=base_url, layer_id=layer_id)
+        gdf = fetch_nsprd_parcels(
+            config.study_area.bbox, base_url=base_url, layer_id=layer_id,
+            working_crs=config.working_crs,
+        )
         if gdf is None or gdf.empty:
             return None
     else:
@@ -549,7 +594,7 @@ def ingest_parcels(
         src_file = candidates[0]
         logger.info("Ingesting parcels from %s", src_file)
         gdf = gpd.read_file(src_file)
-        gdf = _reproject_to_working(gdf)
+        gdf = _reproject_to_working(gdf, config.working_crs)
 
     # Clip to study area
     bbox_geom = box(*config.study_area.bbox)
@@ -562,6 +607,19 @@ def ingest_parcels(
     gdf = gdf[gdf.geometry.geom_type.isin(("Polygon", "MultiPolygon"))].copy()
 
     gdf = _normalize_parcel_fields(gdf)
+
+    from src.constants import MIN_PID_COVERAGE_FRACTION
+    pid_coverage = (gdf["PID"].astype(bool)).mean() if len(gdf) else 0.0
+    if len(gdf) and pid_coverage < MIN_PID_COVERAGE_FRACTION:
+        logger.error(
+            "Only %.0f%% of %d parcels have a PID (expected >=%.0f%%) — the "
+            "source schema may have drifted (PID field renamed/moved). "
+            "Aborting rather than writing an unusable PID list.",
+            pid_coverage * 100, len(gdf), MIN_PID_COVERAGE_FRACTION * 100,
+        )
+        return None
+
+    gdf = _dissolve_by_pid(gdf)
     gdf["area_acres"] = gdf.geometry.area / 4046.86
 
     processed.mkdir(parents=True, exist_ok=True)
@@ -586,7 +644,8 @@ def _mask_to_polygons(mask, transform, working_crs: str) -> gpd.GeoDataFrame:
 
 
 def fetch_flood_polygons(
-    bbox_working: tuple, service_url: str | None = None, size: int | None = None, timeout: int = 120
+    bbox_working: tuple, service_url: str | None = None, size: int | None = None,
+    timeout: int = 120, working_crs: str = WORKING_CRS,
 ) -> gpd.GeoDataFrame | None:
     """Export the coastal-flooding raster for the bbox and polygonize its extent.
 
@@ -594,7 +653,9 @@ def fetch_flood_polygons(
     MapServer ``export`` op with a transparent background, treat any rendered
     (alpha>0) pixel as flooded, and polygonize. Best-effort: returns None on
     failure. Transform is built from the requested bbox/size so georeferencing
-    doesn't depend on the server embedding it.
+    doesn't depend on the server embedding it. ``bbox_working`` is assumed to be
+    in ``working_crs``; its EPSG code is what's sent as bboxSR/imageSR — the
+    service must support it (it accepts standard ArcGIS spatial references).
     """
     from rasterio.io import MemoryFile
     from rasterio.transform import from_bounds
@@ -610,9 +671,10 @@ def fetch_flood_polygons(
 
     base = (service_url or FLOOD_SERVICE).rstrip("/") + "/export"
     size = size or FLOOD_EXPORT_SIZE
+    epsg = working_crs.split(":")[1]
     xmin, ymin, xmax, ymax = bbox_working
     params = {
-        "bbox": f"{xmin},{ymin},{xmax},{ymax}", "bboxSR": "2961", "imageSR": "2961",
+        "bbox": f"{xmin},{ymin},{xmax},{ymax}", "bboxSR": epsg, "imageSR": epsg,
         "size": f"{size},{size}", "format": "png", "transparent": "true", "f": "image",
     }
     try:
@@ -627,7 +689,7 @@ def fetch_flood_polygons(
         return None
 
     transform = from_bounds(xmin, ymin, xmax, ymax, w, h)
-    gdf = _mask_to_polygons(mask, transform, WORKING_CRS)
+    gdf = _mask_to_polygons(mask, transform, working_crs)
     if gdf.empty:
         return None
     gdf["exclusion_reason"] = "flood_zone"
@@ -654,6 +716,7 @@ def ingest_wind(config: Config) -> Path | None:
     from src.constants import WIND_GWA_URL
 
     processed = config.paths.processed
+    working_crs = config.working_crs
     out_path = processed / "wind.tif"
     if out_path.exists():
         logger.info("Wind already processed: %s", out_path)
@@ -665,7 +728,7 @@ def ingest_wind(config: Config) -> Path | None:
     res = float(config.cell_size_m)
     try:
         with rasterio.open(f"/vsicurl/{WIND_GWA_URL}") as src:
-            b = gpd.GeoSeries([box(*bbox)], crs=WORKING_CRS).to_crs(src.crs).total_bounds
+            b = gpd.GeoSeries([box(*bbox)], crs=working_crs).to_crs(src.crs).total_bounds
             win = window_from_bounds(b[0], b[1], b[2], b[3], src.transform)
             data = src.read(1, window=win)
             src_transform = src.window_transform(win)
@@ -681,12 +744,12 @@ def ingest_wind(config: Config) -> Path | None:
     reproject(
         source=data, destination=dst,
         src_transform=src_transform, src_crs=src_crs,
-        dst_transform=dst_transform, dst_crs=WORKING_CRS,
+        dst_transform=dst_transform, dst_crs=working_crs,
         src_nodata=src_nodata, dst_nodata=np.nan, resampling=Resampling.bilinear,
     )
     processed.mkdir(parents=True, exist_ok=True)
     meta = {"driver": "GTiff", "height": h, "width": w, "count": 1, "dtype": "float32",
-            "crs": WORKING_CRS, "transform": dst_transform, "nodata": np.nan, "compress": "lzw"}
+            "crs": working_crs, "transform": dst_transform, "nodata": np.nan, "compress": "lzw"}
     with rasterio.open(out_path, "w", **meta) as d:
         d.write(dst, 1)
     valid = dst[np.isfinite(dst)]
@@ -707,7 +770,7 @@ def ingest_flood(config: Config) -> Path | None:
         logger.info("Flood already processed: %s", out_path)
         return out_path
 
-    gdf = fetch_flood_polygons(config.study_area.bbox)
+    gdf = fetch_flood_polygons(config.study_area.bbox, working_crs=config.working_crs)
     if gdf is None or gdf.empty:
         logger.info("No flood layer ingested (optional / service unreachable)")
         return None
@@ -743,7 +806,7 @@ def ingest_waterbodies(config: Config) -> Path | None:
         return None
 
     gdf = gpd.read_file(candidates[0])
-    gdf = _reproject_to_working(gdf)
+    gdf = _reproject_to_working(gdf, config.working_crs)
     bbox_geom = box(*config.study_area.bbox)
     gdf = gdf[gdf.intersects(bbox_geom)].copy()
     if gdf.empty:

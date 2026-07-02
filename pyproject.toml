@@ -15,6 +15,7 @@ dependencies = [
     "whitebox>=2.3",
     "scikit-image>=0.22",
     "requests>=2.31",
+    "scipy>=1.11",
 ]
 
 [project.optional-dependencies]

@@ -215,6 +215,12 @@ PARCEL_AAN_FIELDS = (
     "ASSESSMENT_ACCOUNT_NUMBER", "TARGET_AAN",
 )
 
+# Minimum fraction of ingested parcels that must carry a real PID. If the
+# source schema drifts (a service renames/moves the PID field) and no column
+# in PARCEL_PID_FIELDS matches, every PID comes back blank — this catches that
+# case so ingest fails loudly instead of silently shipping an unusable PID list.
+MIN_PID_COVERAGE_FRACTION = 0.5
+
 # Parcel aggregation defaults (Stage B)
 # cell_weight lowered from 0.8 -> 0.65 so acreage (a stated top priority, and
 # the basis for severance/privacy/solar-room) pulls harder on parcel ranking.

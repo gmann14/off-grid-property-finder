@@ -14,7 +14,7 @@ EXPECTED_LAYERS = {
         "type": "raster",
         "extensions": [".tif", ".tiff"],
         "required": True,
-        "description": "NS Enhanced DEM (20m)",
+        "description": "DEM raster — HRDEM (2-5m) preferred in data/raw/hrdem/, else CDEM (~18m) here",
     },
     "streams": {
         "subdir": "hydro",
@@ -51,19 +51,12 @@ EXPECTED_LAYERS = {
         "required": False,
         "description": "Building footprints",
     },
-    "flood": {
-        "subdir": "exclusions",
-        "type": "vector",
-        "extensions": [".shp", ".gpkg", ".geojson"],
-        "required": False,
-        "description": "Flood/coastal risk",
-    },
     "parcels": {
         "subdir": "parcels",
         "type": "vector",
         "extensions": [".shp", ".gpkg", ".gdb"],
         "required": False,
-        "description": "Property parcels (Stage B)",
+        "description": "Property parcels (Stage B) — or fetch with `ingest-parcels --from-rest`",
     },
     "civic": {
         "subdir": "civic",
@@ -71,6 +64,29 @@ EXPECTED_LAYERS = {
         "extensions": [".shp", ".gpkg", ".geojson"],
         "required": False,
         "description": "Civic address points",
+    },
+    "waterbodies": {
+        "subdir": "water",
+        "type": "vector",
+        "extensions": [".shp", ".gpkg", ".geojson"],
+        "required": False,
+        "description": "Waterbody polygons (lakes/ocean) for the buildability mask",
+    },
+}
+
+# Layers that `prepare`/`ingest` fetch directly from a remote service into
+# data/processed/ — they need no raw file at all, so they're checked separately
+# from EXPECTED_LAYERS (which assumes a manually-downloaded raw input).
+AUTO_FETCHED_LAYERS = {
+    "flood": {
+        "processed_name": "flood.gpkg",
+        "type": "vector",
+        "description": "Coastal flooding (NS Coastal Program) — auto-fetched by `ingest_flood`",
+    },
+    "wind": {
+        "processed_name": "wind.tif",
+        "type": "raster",
+        "description": "Wind resource (Global Wind Atlas) — auto-fetched by `ingest_wind`",
     },
 }
 
@@ -116,6 +132,31 @@ def _check_vector(path: Path, logger: logging.Logger) -> dict:
         return {"path": str(path), "status": "error", "error": str(e)}
 
 
+def _check_auto_fetched(config: Config, logger: logging.Logger) -> dict[str, dict]:
+    """Report status of layers `prepare` fetches remotely (no raw file needed)."""
+    results = {}
+    for layer_name, spec in AUTO_FETCHED_LAYERS.items():
+        path = config.paths.processed / spec["processed_name"]
+        if not path.exists():
+            logger.info(
+                "%-18s not yet fetched — %s (run `prepare`/`ingest` to fetch)",
+                layer_name, spec["description"],
+            )
+            results[layer_name] = {
+                "status": "NOT YET FETCHED (auto)",
+                "description": spec["description"],
+            }
+            continue
+        result = _check_raster(path, logger) if spec["type"] == "raster" else _check_vector(path, logger)
+        result["description"] = spec["description"]
+        results[layer_name] = result
+        if result["status"] == "ok":
+            logger.info("%-18s OK  %s", layer_name, path.name)
+        else:
+            logger.error("%-18s ERROR  %s", layer_name, result.get("error", ""))
+    return results
+
+
 def run_check_data(config: Config, logger: logging.Logger) -> dict[str, dict]:
     results = {}
     raw_dir = config.paths.raw
@@ -145,6 +186,8 @@ def run_check_data(config: Config, logger: logging.Logger) -> dict[str, dict]:
                 logger.info("  CRS: %s", result["crs"])
         else:
             logger.error("%-18s ERROR  %s", layer_name, result.get("error", ""))
+
+    results.update(_check_auto_fetched(config, logger))
 
     ok_count = sum(1 for r in results.values() if r.get("status") == "ok")
     total = len(results)

@@ -10,6 +10,7 @@ from click.testing import CliRunner
 from shapely.geometry import box
 
 from src.analyze import (
+    SCORE_COLUMNS,
     _format_confidence_bands,
     _format_histogram,
     _format_stats,
@@ -17,6 +18,7 @@ from src.analyze import (
 )
 from src.cli import cli
 from src.config import Config, Paths, StudyArea
+from src.constants import DEFAULT_WEIGHTS
 
 
 @pytest.fixture
@@ -33,11 +35,12 @@ def scored_gdf():
 
     data = {
         "score_hydro": np.concatenate([np.zeros(30), rng.uniform(10, 90, 40), np.full(30, 100)]),
-        "score_solar": np.full(n, 80.0),
+        "score_open_ground": np.full(n, 80.0),
         "score_elevation": rng.uniform(0, 100, n),
         "score_access": np.concatenate([np.full(50, 100), np.full(50, 0)]),
-        "score_buildable": rng.uniform(20, 100, n),
+        "score_wind": rng.uniform(20, 100, n),
         "score": rng.uniform(0, 100, n),
+        "score_allrounder": rng.uniform(0, 100, n),
         "confidence": np.concatenate([np.full(60, 80.0), np.full(25, 65.0), np.full(15, 40.0)]),
         "confidence_band": (["high"] * 60 + ["medium"] * 25 + ["low"] * 15),
         "status": ["eligible"] * n,
@@ -157,15 +160,30 @@ class TestFormatConfidenceBands:
         assert "low: 1 (50.0%)" in result
 
 
+class TestScoreColumnsCoverage:
+    def test_score_columns_cover_default_criteria(self):
+        """Regression: SCORE_COLUMNS drifted from the live scoring criteria once
+        (still listed dead score_solar/score_buildable, omitted score_open_ground/
+        score_wind/score_allrounder). Every enabled-by-default criterion's column
+        must be tracked here so `analyze` reports real data, not "not found"."""
+        for name in DEFAULT_WEIGHTS:
+            assert f"score_{name}" in SCORE_COLUMNS, f"score_{name} missing from SCORE_COLUMNS"
+
+    def test_no_dead_criteria_in_score_columns(self):
+        live = {f"score_{name}" for name in DEFAULT_WEIGHTS} | {"score", "score_allrounder"}
+        assert set(SCORE_COLUMNS) == live
+
+
 class TestRunAnalyze:
     def test_produces_report(self, config_for_analyze):
         report = run_analyze(config_for_analyze, logging.getLogger("test"))
         assert "score_hydro" in report
-        assert "score_solar" in report
+        assert "score_open_ground" in report
+        assert "score_wind" in report
         assert "score_elevation" in report
         assert "score_access" in report
-        assert "score_buildable" in report
         assert "score" in report
+        assert "score_allrounder" in report
         assert "confidence" in report
 
     def test_report_includes_histogram(self, config_for_analyze):
