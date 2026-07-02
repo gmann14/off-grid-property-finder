@@ -119,6 +119,8 @@ Place raw data in `data/raw/` subdirectories:
 
 Neither `data/raw/` nor `data/processed/` is committed to the repo (both are gitignored) — a fresh clone must run `prepare` before scoring. Flood (NS Coastal Program) and wind (Global Wind Atlas) need no raw download at all: `prepare`/`ingest` fetch them directly into `data/processed/` from public services. To re-ingest from scratch (e.g., to change the study area), delete `data/processed/`, place the raw files above in `data/raw/`, and run `python -m src prepare`.
 
+**Changing the study area or cell size:** `prepare`/`ingest` record the config values (`study_area`, `cell_size_m`, `working_crs`) that produced `data/processed/` in a small manifest. If you change those in `config.yaml`, the next `prepare`/`ingest`/`score` run will refuse to proceed (rather than silently mixing old- and new-region outputs) unless you pass `--force`, which clears the generated outputs and rebuilds them for the new config. A pre-existing `data/processed/` with no manifest yet is treated as unknown, not stale — it's baselined against the current config, not deleted.
+
 See [DATA-SOURCES.md](DATA-SOURCES.md) for the full data source inventory.
 
 ### Format Conversion

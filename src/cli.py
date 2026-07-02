@@ -29,14 +29,21 @@ def check_data(ctx: click.Context) -> None:
 
 
 @cli.command()
+@click.option("--force", is_flag=True, default=False,
+              help="Regenerate outputs even if data/processed/ was built from a different config")
 @click.pass_context
-def ingest(ctx: click.Context) -> None:
+def ingest(ctx: click.Context, force: bool) -> None:
     """Ingest raw data into standardized formats (GPKG/GeoTIFF)."""
     from src.ingest import run_ingest
+    from src.manifest import StaleProcessedDataError
 
     cfg = ctx.obj["config"]
     logger = ctx.obj["logger"]
-    run_ingest(cfg, logger)
+    try:
+        run_ingest(cfg, logger, force=force)
+    except StaleProcessedDataError as e:
+        logger.error(str(e))
+        raise SystemExit(1)
 
 
 @cli.command("ingest-parcels")
@@ -68,14 +75,21 @@ def ingest_parcels_cmd(ctx: click.Context, from_rest: bool, layer: int | None, s
 
 
 @cli.command()
+@click.option("--force", is_flag=True, default=False,
+              help="Regenerate outputs even if data/processed/ was built from a different config")
 @click.pass_context
-def prepare(ctx: click.Context) -> None:
+def prepare(ctx: click.Context, force: bool) -> None:
     """Prepare data: clip to study area, generate DEM derivatives, build masks and candidate grid."""
     from src.prepare import run_prepare
+    from src.manifest import StaleProcessedDataError
 
     cfg = ctx.obj["config"]
     logger = ctx.obj["logger"]
-    run_prepare(cfg, logger)
+    try:
+        run_prepare(cfg, logger, force=force)
+    except StaleProcessedDataError as e:
+        logger.error(str(e))
+        raise SystemExit(1)
 
 
 @cli.command()

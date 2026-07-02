@@ -22,15 +22,19 @@ from src.mask import build_buildability_mask, build_rural_mask
 logger = logging.getLogger("property_finder")
 
 
-def run_prepare(config: Config, logger: logging.Logger) -> None:
-    """Run the full data preparation pipeline."""
+def run_prepare(config: Config, logger: logging.Logger, force: bool = False) -> None:
+    """Run the full data preparation pipeline.
+
+    ``force`` is forwarded to `run_ingest` — see src/manifest.py. A study-area/
+    cell-size/CRS change without --force raises before touching anything.
+    """
     processed = config.paths.processed
     processed.mkdir(parents=True, exist_ok=True)
     bbox = config.study_area.bbox
 
     # Phase 1: Ingest raw data into standardized formats
     logger.info("=== Phase 1: Data ingestion ===")
-    ingested = run_ingest(config, logger)
+    ingested = run_ingest(config, logger, force=force)
 
     # Phase 2: Generate DEM derivatives
     logger.info("=== Phase 2: DEM derivatives ===")

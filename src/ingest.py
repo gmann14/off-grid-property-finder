@@ -833,10 +833,19 @@ def ingest_waterbodies(config: Config) -> Path | None:
     return out_path
 
 
-def run_ingest(config: Config, logger: logging.Logger) -> dict[str, Path | None]:
-    """Run all ingestion steps. Returns dict of layer_name -> processed path."""
+def run_ingest(config: Config, logger: logging.Logger, force: bool = False) -> dict[str, Path | None]:
+    """Run all ingestion steps. Returns dict of layer_name -> processed path.
+
+    ``force`` clears data/processed/ outputs and rebaselines the manifest if
+    the config (study area/cell size/CRS) no longer matches what's cached
+    there; without it, a mismatch raises rather than silently mixing old and
+    new outputs. See src/manifest.py.
+    """
+    from src.manifest import check_and_update_manifest
+
     processed = config.paths.processed
     processed.mkdir(parents=True, exist_ok=True)
+    check_and_update_manifest(config, force=force)
 
     results = {}
     results["dem"] = ingest_dem(config)
