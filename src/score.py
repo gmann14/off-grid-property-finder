@@ -33,20 +33,17 @@ def run_score(config: Config, logger: logging.Logger, limit: int | None = None) 
     whole pipeline (exclusions → score → confidence → parcels → export) before
     committing to a full ~15-min run.
     """
-    from src.manifest import StaleProcessedDataError, verify_manifest_fresh
+    from src.manifest import verify_manifest_fresh
 
     processed = config.paths.processed
     output = config.paths.output
-    output.mkdir(parents=True, exist_ok=True)
 
     # score doesn't regenerate raw/derived layers, so a config mismatch here
-    # can only be fixed by re-running prepare/ingest — fail clearly rather
-    # than silently scoring against the wrong region's cached data.
-    try:
-        verify_manifest_fresh(config)
-    except StaleProcessedDataError as e:
-        logger.error(str(e))
-        return
+    # can only be fixed by re-running prepare/ingest — fail clearly (raising
+    # StaleProcessedDataError, which the CLI turns into exit code 1) rather
+    # than silently scoring against the wrong region's or wind config's data.
+    verify_manifest_fresh(config)
+    output.mkdir(parents=True, exist_ok=True)
 
     # Load candidate grid
     grid_path = processed / "candidate_grid.gpkg"

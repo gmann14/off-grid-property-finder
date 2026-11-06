@@ -98,11 +98,16 @@ def prepare(ctx: click.Context, force: bool) -> None:
 @click.pass_context
 def score(ctx: click.Context, limit: int | None) -> None:
     """Score candidate cells and produce ranked output."""
+    from src.manifest import StaleProcessedDataError
     from src.score import run_score
 
     cfg = ctx.obj["config"]
     logger = ctx.obj["logger"]
-    run_score(cfg, logger, limit=limit)
+    try:
+        run_score(cfg, logger, limit=limit)
+    except StaleProcessedDataError as e:
+        logger.error(str(e))
+        raise SystemExit(1)
 
 
 @cli.command()

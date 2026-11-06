@@ -104,19 +104,33 @@ WIND_SPEED_THRESHOLDS = [
 WIND_HUB_HEIGHT_M = 30.0
 # Global Wind Atlas mean wind speed COGs (all of Canada, EPSG:4326, ~0.0025°
 # ≈ 200–280 m). Read by windowed /vsicurl/ range requests (no full ~1.3 GB
-# download). Free/public. GWA publishes Canada at 10, 50 and 100 m; the hub
-# speed is interpolated per pixel between the two layers below with a
-# power-law shear profile (see ingest_wind). Overridable via `wind.gwa_layers`.
+# download). Free/public. GWA publishes Canada at 10, 50 and 100 m. The hub
+# speed is extrapolated per pixel from the 50 m and 100 m layers with a
+# power-law shear profile (see ingest_wind). The 10 m layer is NOT used: over
+# NS forest it sits inside the canopy (~0.1–0.5 m/s under ~5 m/s at 50 m).
+# Overridable via `wind.gwa_layers`.
 WIND_GWA_URL_TEMPLATE = "https://gwa.cdn.nazkamapps.com/country_tifs_v4/CAN_wind-speed_{height}m.tif"
-WIND_GWA_LAYERS = {h: WIND_GWA_URL_TEMPLATE.format(height=h) for h in (10, 50)}
+WIND_GWA_LAYERS = {h: WIND_GWA_URL_TEMPLATE.format(height=h) for h in (50, 100)}
 # Clamp on the per-pixel shear exponent α = ln(v_hi/v_lo) / ln(h_hi/h_lo).
-# Open water/grass sits ~0.1, forest ~0.3–0.5; GWA's 10 m layer over NS forest
-# is near zero (inside the canopy), which pushes raw α to 1–2 there.
+# Open water/grass sits ~0.1, forest ~0.3–0.5 (study area 50→100 m: median 0.42).
 WIND_SHEAR_ALPHA_MIN = 0.05
 WIND_SHEAR_ALPHA_MAX = 0.6
+# Canopy guard: a pixel whose lower layer is below half the upper layer
+# (implied α > 1 between 50/100 m, > 0.43 between 10/50 m) is treated as an
+# unusable lower layer and written as nodata. If more than
+# WIND_MAX_REJECTED_FRACTION of the pixels fail, the layer pair is refused
+# outright. On the real study area 0% of 50/100 m pixels fail; 52% of 10/50 m
+# pixels do.
+WIND_MIN_LAYER_RATIO = 0.5
+WIND_MAX_REJECTED_FRACTION = 0.05
+# GDAL /vsicurl/ network settings for the GWA reads (seconds / attempts), so a
+# stalled CDN fails with a clear error instead of hanging the ingest.
+WIND_HTTP_TIMEOUT_S = 60
+WIND_HTTP_MAX_RETRY = 2
 # Bump when ingest_wind's method changes, so the manifest invalidates any
 # wind.tif built by the old code (see src/manifest.py).
-WIND_INGEST_METHOD = "gwa-powerlaw-nearest-anchor-v1"
+# v2: 50/100 m layers, canopy guard, pixel-snapped/clipped source windows.
+WIND_INGEST_METHOD = "gwa-powerlaw-nearest-anchor-v2"
 WIND_NODATA = -9999.0
 
 # Topographic Position Index (m): cell mean elevation minus surrounding-area

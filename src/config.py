@@ -1,5 +1,7 @@
 """Load and validate config.yaml."""
 
+import math
+import numbers
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -42,19 +44,57 @@ class WindSettings:
     gwa_layers: dict[int, str] = field(default_factory=lambda: dict(WIND_GWA_LAYERS))
 
     def __post_init__(self) -> None:
-        self.hub_height_m = float(self.hub_height_m)
-        if not self.hub_height_m > 0:
-            raise ValueError(f"wind.hub_height_m must be > 0, got {self.hub_height_m}")
-        layers = {int(h): str(url) for h, url in (self.gwa_layers or {}).items()}
+        self.hub_height_m = _positive_metres(self.hub_height_m, "wind.hub_height_m")
+        if not isinstance(self.gwa_layers, dict):
+            raise ValueError(
+                f"wind.gwa_layers must map layer height (m) to a GWA COG URL, got {self.gwa_layers!r}"
+            )
+        layers: dict[int, str] = {}
+        for height, url in self.gwa_layers.items():
+            h = _positive_metres(height, f"wind.gwa_layers key {height!r}")
+            if h != int(h):
+                raise ValueError(f"wind.gwa_layers heights must be whole metres, got {height!r}")
+            if not isinstance(url, str) or not url.strip():
+                raise ValueError(f"wind.gwa_layers[{height!r}] must be a non-empty URL, got {url!r}")
+            layers[int(h)] = url.strip()
         if len(layers) != 2:
             raise ValueError(
                 f"wind.gwa_layers needs exactly two heights to fit a shear profile, got {sorted(layers)}"
             )
-        if any(h <= 0 for h in layers):
-            raise ValueError(f"wind.gwa_layers heights must be > 0, got {sorted(layers)}")
-        if any(not url for url in layers.values()):
-            raise ValueError("wind.gwa_layers has an empty URL")
         self.gwa_layers = dict(sorted(layers.items()))
+
+
+def _positive_metres(value, name: str) -> float:
+    """``value`` as a finite float > 0, or a ValueError naming ``name``.
+    Only real numbers count: a bool (``true``) or a quoted string (``"30"``)
+    in config.yaml is almost always a typo, so it fails instead of coercing."""
+    if isinstance(value, bool) or not isinstance(value, numbers.Real):
+        raise ValueError(f"{name} must be a number of metres, got {value!r}")
+    f = float(value)
+    if not math.isfinite(f) or f <= 0:
+        raise ValueError(f"{name} must be a finite number > 0, got {value!r}")
+    return f
+
+
+_WIND_KEYS = {"hub_height_m", "gwa_layers"}
+
+
+def _load_wind(raw) -> WindSettings:
+    """No ``wind:`` block (as in configs from before it existed) -> the
+    defaults. A block that is present must give both keys, so a typo such as
+    ``hub_height: 50`` fails loudly instead of silently scoring at 30 m."""
+    if raw is None:
+        return WindSettings()
+    if not isinstance(raw, dict):
+        raise ValueError(f"wind: must be a mapping with {sorted(_WIND_KEYS)}, got {raw!r}")
+    unknown = set(raw) - _WIND_KEYS
+    if unknown:
+        raise ValueError(f"wind: unknown key(s) {sorted(unknown)}; expected {sorted(_WIND_KEYS)}")
+    missing = _WIND_KEYS - set(raw)
+    if missing:
+        raise ValueError(f"wind: missing key(s) {sorted(missing)}; give both {sorted(_WIND_KEYS)} "
+                         "or drop the wind: block to use the defaults")
+    return WindSettings(hub_height_m=raw["hub_height_m"], gwa_layers=raw["gwa_layers"])
 
 
 @dataclass
@@ -113,11 +153,7 @@ def load_config(path: str | Path = "config.yaml") -> Config:
                 f"Enabled criterion '{criterion}' has no weight defined"
             )
 
-    wind_raw = raw.get("wind") or {}
-    wind = WindSettings(
-        hub_height_m=wind_raw.get("hub_height_m", WIND_HUB_HEIGHT_M),
-        gwa_layers=wind_raw.get("gwa_layers", dict(WIND_GWA_LAYERS)),
-    )
+    wind = _load_wind(raw.get("wind"))
 
     return Config(
         study_area=study_area,
