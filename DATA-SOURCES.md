@@ -140,32 +140,53 @@ Not a data source per se — we derive this from the DEM:
 
 - **Source:** Global Wind Atlas (DTU Wind Energy / World Bank), country layers
 - **URLs:** `https://gwa.cdn.nazkamapps.com/country_tifs_v4/CAN_wind-speed_{10,50,100}m.tif`
-  (10 m, 50 m and 100 m above ground; all three confirmed HTTP 200 on 2026-11-06)
+  (10 m, 50 m and 100 m above ground; all three confirmed HTTP 200 on 2026-11-06;
+  the tool reads 50 m and 100 m)
 - **Format:** Cloud-Optimized GeoTIFF, EPSG:4326, 0.0025° (~200 × 280 m at 44°N),
   float32 mean speed (m/s), nodata NaN. ~1.3–1.4 GB per layer.
 - **Coverage:** All of Canada, onshore plus near-shore water
 - **Cost:** Free, no account
 - **Access:** Never downloaded whole. `ingest_wind` reads only the study-area
-  window via GDAL `/vsicurl/` range requests (~255 × 183 px, ~1–2 s per layer)
-  and resamples it (bilinear) onto the 250 m working grid.
+  window via GDAL `/vsicurl/` range requests (~255 × 183 px, ~1–2 s per layer,
+  60 s HTTP timeout, 2 retries) and resamples it (bilinear) onto the 250 m
+  working grid. The window is snapped to whole GWA pixels before reading: an
+  unsnapped window is read with floored offsets but georeferenced with the
+  fractional ones, which put the data ~190 m east and ~115 m south of where it
+  belongs (0.96 × 0.41 px). That affected every `wind.tif` before 2026-11-06,
+  including the July 100 m run. Fixing it moved v30 by 0.07 m/s on average
+  (95th percentile 0.22, max 0.82) and changed the wind band on 8% of cells.
 - **How the tool uses it (since 2026-11-06):** the wind criterion scores the
   estimated mean speed at a **small off-grid turbine's hub height**
   (`wind.hub_height_m` in `config.yaml`, default **30 m**: 1–10 kW turbines sit
   on ~18–37 m towers, and 30 m clears ~20 m NS forest). Per pixel, a power-law
-  shear exponent α = ln(v50/v10)/ln(5) is clamped to 0.05–0.6 and the profile
-  is evaluated at the hub, anchored on the layer nearer the hub in log-height
-  (50 m for a 30 m hub). Before this, the tool scored the 100 m layer directly
+  shear exponent is fitted between the **50 m and 100 m** layers,
+  α = ln(v100/v50)/ln(2), clamped to 0.05–0.6, and the profile is extrapolated
+  down to the hub from the layer nearer it in log-height:
+  v30 = v50 × (30/50)^α. On the study area α runs 0.12–0.52 (median 0.32;
+  ~0.13 over open water, ~0.4–0.5 over forest). The clamp binds on 12 of 40,000
+  pixels. Before this, the tool scored the 100 m layer directly
   (utility-turbine height), and nearly every parcel cleared 5.5 m/s.
-- **Gotcha: the 10 m layer over forest.** Over NS forest GWA's 10 m speeds are
-  ~0.2–0.5 m/s against ~4–5 m/s at 50 m (raw α 1–2, i.e. inside the canopy).
-  So α is clamped on about half the study-area pixels, essentially all forested
-  land. A power law anchored on the 10 m value would then put a 30 m hub
-  below 1 m/s. Anchoring on 50 m gives ~3.5 m/s, in line with a
-  displacement-height log-law for a 20 m canopy. Wherever α isn't clamped, both
-  anchors agree exactly.
+- **Don't use the 10 m layer.** Over NS forest GWA's 10 m speeds sit inside
+  the canopy: ~0.2–0.5 m/s under ~4–5 m/s at 50 m (median v10/v50 0.36 over
+  the study area, 0.07 at the 5th percentile). A profile through 10 m puts a
+  30 m hub in forest below 1 m/s, or makes it a function of the α clamp. The
+  first pass of this change used 10 m + 50 m and was replaced the same day.
+  `ingest_wind` now guards against it: a pixel where the lower layer is below
+  half the upper one is treated as having no value, and if more than 5% of
+  pixels fail, the layer pair is refused and nothing is written. A 10 m + 50 m
+  pair fails on 55% of the study area; 50 m + 100 m fails on none.
+- **What it can and can't resolve:** GWA is a 250 m microscale model with
+  speed at height *above ground*. It sees coastal exposure strongly (land within
+  1 km of the sea: median 4.6 m/s at 30 m; land ≥3 km inland: 3.9) and
+  ridges more weakly (inland TPI ≥15 m: 4.4; inland valleys: 3.8). Ground
+  elevation alone counts for little: inland, 40–70 m ground is ~0.3 m/s windier
+  at 30 m than 0–15 m ground, while going from 30 m to 80 m above low ground
+  adds ~1.9 m/s. A cleared knoll smaller than a GWA pixel is not resolved.
 - **Cache:** the layer URLs, hub height and ingest method are recorded in
-  `data/processed/.manifest.json`. Changing any of them makes `score` refuse a
-  stale `wind.tif`; `ingest --force` then deletes and rebuilds only `wind.tif`.
+  `data/processed/.manifest.json` once `wind.tif` is written. Changing any of
+  them makes `score` refuse the stale `wind.tif` (exit code 1). `ingest --force`
+  then rebuilds only `wind.tif`: into a temp file, swapped in once complete, so
+  a failed fetch leaves the previous file and its record untouched.
 - **Notes:** a third-party CDN with no pinned version or mirror. If it moves,
   point `wind.gwa_layers` at a mirror; the manifest picks up the change.
 
