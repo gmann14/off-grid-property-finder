@@ -968,7 +968,7 @@ def ingest_wind(config: Config) -> Path | None:
     extrapolating = "" if h_lo <= hub <= h_hi else " (extrapolated)"
     logger.info(
         "Wind processed: %s (%dx%d, %gm hub%s from GWA %sm/%sm, %.1f-%.1f m/s, median %.1f; "
-        "%d nodata px, %d failed the canopy guard; shear exponent clamped low on %d px, "
+        "%d px without a value (%d of them failed the canopy guard); shear exponent clamped low on %d px, "
         "high on %d px)",
         out_path, w, h, hub, extrapolating, h_lo, h_hi, float(valid.min()), float(valid.max()),
         float(np.median(valid)), stats["invalid"], stats["rejected_ratio"],
