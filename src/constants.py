@@ -86,18 +86,38 @@ OPEN_GROUND_SOUTH_FRACTION = 0.25  # >=25% south-facing to earn the bonus
 # Wind is a BONUS/winter-redundancy play, not a core driver (solar covers most
 # needs in NS). Scored from a Global Wind Atlas raster when present, else from
 # terrain exposure (TPI) as a lower-confidence proxy.
-# Mean wind speed (m/s) at ~100m hub height (Global Wind Atlas):
+# Estimated mean wind speed (m/s) at a small off-grid turbine's hub height
+# (default 30 m — see WIND_HUB_HEIGHT_M). Bands follow small-turbine practice:
+# ~4 m/s is the usual floor for a small turbine to be worth installing, ~5 m/s
+# is good, 6+ m/s is excellent. (The old bands were for GWA's 100 m layer —
+# utility-turbine height — where nearly every parcel cleared 5.5 m/s.)
 WIND_SPEED_THRESHOLDS = [
-    (8.5, float("inf"), 100),
-    (7.5, 8.5, 85),
-    (6.5, 7.5, 65),
-    (5.5, 6.5, 40),
-    (0, 5.5, 15),
+    (6.0, float("inf"), 100),
+    (5.0, 6.0, 85),
+    (4.5, 5.0, 65),
+    (4.0, 4.5, 40),
+    (0, 4.0, 15),
 ]
-# Global Wind Atlas mean wind speed at 100m hub height — a Cloud-Optimized
-# GeoTIFF (all of Canada, EPSG:4326, ~250m). Read by windowed /vsicurl/ range
-# requests (no full 1.3GB download) into processed/wind.tif. Free/public.
-WIND_GWA_URL = "https://gwa.cdn.nazkamapps.com/country_tifs_v4/CAN_wind-speed_100m.tif"
+# Small off-grid turbines (1–10 kW) sit on ~18–37 m towers; in NS forest
+# (trees ~20 m) a 30 m hub clears the canopy by the usual ~10 m. Overridable
+# via `wind.hub_height_m` in config.yaml.
+WIND_HUB_HEIGHT_M = 30.0
+# Global Wind Atlas mean wind speed COGs (all of Canada, EPSG:4326, ~0.0025°
+# ≈ 200–280 m). Read by windowed /vsicurl/ range requests (no full ~1.3 GB
+# download). Free/public. GWA publishes Canada at 10, 50 and 100 m; the hub
+# speed is interpolated per pixel between the two layers below with a
+# power-law shear profile (see ingest_wind). Overridable via `wind.gwa_layers`.
+WIND_GWA_URL_TEMPLATE = "https://gwa.cdn.nazkamapps.com/country_tifs_v4/CAN_wind-speed_{height}m.tif"
+WIND_GWA_LAYERS = {h: WIND_GWA_URL_TEMPLATE.format(height=h) for h in (10, 50)}
+# Clamp on the per-pixel shear exponent α = ln(v_hi/v_lo) / ln(h_hi/h_lo).
+# Open water/grass sits ~0.1, forest ~0.3–0.5; GWA's 10 m layer over NS forest
+# is near zero (inside the canopy), which pushes raw α to 1–2 there.
+WIND_SHEAR_ALPHA_MIN = 0.05
+WIND_SHEAR_ALPHA_MAX = 0.6
+# Bump when ingest_wind's method changes, so the manifest invalidates any
+# wind.tif built by the old code (see src/manifest.py).
+WIND_INGEST_METHOD = "gwa-powerlaw-nearest-anchor-v1"
+WIND_NODATA = -9999.0
 
 # Topographic Position Index (m): cell mean elevation minus surrounding-area
 # mean. Positive = ridge/hilltop (exposed, windy); negative = valley (sheltered).
@@ -112,8 +132,8 @@ EXPOSURE_RADIUS_M = 1000  # neighbourhood radius for TPI
 
 # "Wind worth it here" flag: meaningful wind resource AND limited room to just
 # add more solar instead (your own logic — wind only pays off when solar can't).
-WIND_WORTH_IT_WIND_MIN = 65       # wind score at/above this
-WIND_WORTH_IT_OPEN_GROUND_MAX = 40  # open-ground score at/below this
+WIND_WORTH_IT_WIND_MIN = 65       # wind score at/above this (>= 4.5 m/s at hub)
+WIND_WORTH_IT_OPEN_GROUND_MAX = 40  # open-ground score at/below this (< 10% open)
 
 # --- Hydro flow-accumulation validity gate ---------------------------------
 # A D8 flow-accumulation raster over flat coastal terrain can silently fail

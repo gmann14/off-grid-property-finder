@@ -111,7 +111,7 @@
 
 ---
 
-## 3. Solar Resource Data
+## 3. Solar & Wind Resource Data
 
 ### 3.1 NRCan Photovoltaic Potential & Solar Resource Maps ⭐ PRIMARY
 
@@ -135,6 +135,39 @@ Not a data source per se — we derive this from the DEM:
 - **Slope raster:** Generated from DEM using GDAL `gdaldem slope`
 - **Hillshade:** Optional, for visualization
 - **Tools:** `gdaldem`, `rasterio`, or `richdem`
+
+### 3.3 Global Wind Atlas — mean wind speed ⭐ PRIMARY for wind
+
+- **Source:** Global Wind Atlas (DTU Wind Energy / World Bank), country layers
+- **URLs:** `https://gwa.cdn.nazkamapps.com/country_tifs_v4/CAN_wind-speed_{10,50,100}m.tif`
+  (10 m, 50 m and 100 m above ground; all three confirmed HTTP 200 on 2026-11-06)
+- **Format:** Cloud-Optimized GeoTIFF, EPSG:4326, 0.0025° (~200 × 280 m at 44°N),
+  float32 mean speed (m/s), nodata NaN. ~1.3–1.4 GB per layer.
+- **Coverage:** All of Canada, onshore plus near-shore water
+- **Cost:** Free, no account
+- **Access:** Never downloaded whole. `ingest_wind` reads only the study-area
+  window via GDAL `/vsicurl/` range requests (~255 × 183 px, ~1–2 s per layer)
+  and resamples it (bilinear) onto the 250 m working grid.
+- **How the tool uses it (since 2026-11-06):** the wind criterion scores the
+  estimated mean speed at a **small off-grid turbine's hub height**
+  (`wind.hub_height_m` in `config.yaml`, default **30 m**: 1–10 kW turbines sit
+  on ~18–37 m towers, and 30 m clears ~20 m NS forest). Per pixel, a power-law
+  shear exponent α = ln(v50/v10)/ln(5) is clamped to 0.05–0.6 and the profile
+  is evaluated at the hub, anchored on the layer nearer the hub in log-height
+  (50 m for a 30 m hub). Before this, the tool scored the 100 m layer directly
+  (utility-turbine height), and nearly every parcel cleared 5.5 m/s.
+- **Gotcha: the 10 m layer over forest.** Over NS forest GWA's 10 m speeds are
+  ~0.2–0.5 m/s against ~4–5 m/s at 50 m (raw α 1–2, i.e. inside the canopy).
+  So α is clamped on about half the study-area pixels, essentially all forested
+  land. A power law anchored on the 10 m value would then put a 30 m hub
+  below 1 m/s. Anchoring on 50 m gives ~3.5 m/s, in line with a
+  displacement-height log-law for a 20 m canopy. Wherever α isn't clamped, both
+  anchors agree exactly.
+- **Cache:** the layer URLs, hub height and ingest method are recorded in
+  `data/processed/.manifest.json`. Changing any of them makes `score` refuse a
+  stale `wind.tif`; `ingest --force` then deletes and rebuilds only `wind.tif`.
+- **Notes:** a third-party CDN with no pinned version or mirror. If it moves,
+  point `wind.gwa_layers` at a mirror; the manifest picks up the change.
 
 ---
 
@@ -385,6 +418,7 @@ Not a data source per se — we derive this from the DEM:
 - ✅ NHN (national hydro)
 - ✅ Crown Land polygons
 - ✅ NRCan Solar Resource data
+- ✅ Global Wind Atlas wind-speed layers (read remotely, no download)
 - ✅ OpenStreetMap roads
 - ✅ HYDAT database
 - ✅ NSTDB Land Cover
@@ -432,6 +466,7 @@ Total download size: ~2–5GB estimated.
 | NRCan FTP (elevation) | https://ftp.maps.canada.ca/pub/nrcan_rncan/elevation/ |
 | NRCan FTP (solar) | https://ftp.maps.canada.ca/pub/nrcan_rncan/Solar-energy_Energie-solaire/ |
 | Water Office (HYDAT) | https://wateroffice.ec.gc.ca/ |
+| Global Wind Atlas | https://globalwindatlas.info/ |
 | ECCC Hydrometric API | https://api.weather.gc.ca/collections/hydrometric-stations |
 | Geofabrik (OSM data) | https://download.geofabrik.de/north-america/canada/ |
 | ViewPoint.ca | https://www.viewpoint.ca/ |

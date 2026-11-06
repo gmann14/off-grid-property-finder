@@ -69,10 +69,12 @@ above are the durable record so the analysis is reproducible.
    (8.7 m³/s ÷ 1,250 km² ≈ 7 L/s/km² in August). So hydro scores reflect the
    *worst* month; real winter output runs ~5–8× higher (Apr ÷ Aug ≈ 8.3×) —
    the candidates are even better in winter than their score implies.
-3. **NASA POWER understates absolute wind.** POWER is a coarse (~50 km) 50 m
-   product; its ~5.2 m/s here is lower than the Global Wind Atlas 100 m data the
-   tool scores with (~7.2 m/s, 250 m). **Use GWA for "how windy is this parcel,"
-   and the POWER curve only for "which months."**
+3. **NASA POWER is coarse, so don't use it for site wind.** POWER is a ~50 km
+   50 m product (~5.2 m/s here). Global Wind Atlas at ~250 m gives ~5.1 m/s
+   median at 50 m over the study area's land (~7 m/s on the coast). The tool
+   now scores GWA's estimate at a **30 m small-turbine hub** (median ~3.8 m/s
+   over land: forest ~3.7, coast ~6.6). **Use GWA for "how windy is this
+   parcel," and the POWER curve only for "which months."**
 4. **Solar curve is approximate** — a generic NS PV profile, for illustration.
 
 ## Implication for scoring

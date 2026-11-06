@@ -1,10 +1,11 @@
 """Wind scoring — Global Wind Atlas resource when available, else exposure proxy.
 
-Wind is a conditional winter-redundancy bonus in NS, not a core driver. When a
-Global Wind Atlas raster (mean wind speed at hub height) is present in
-``processed/wind.tif`` it is used directly; otherwise terrain exposure (the
-Topographic Position Index raster) is a lower-confidence proxy — a turbine
-wants an exposed ridge/hilltop, not a sheltered valley.
+Wind is a conditional winter-redundancy bonus in NS, not a core driver. When
+``processed/wind.tif`` is present (Global Wind Atlas mean speed estimated at a
+small off-grid turbine's hub height, default 30 m — see `ingest_wind`) it is
+used directly; otherwise terrain exposure (the Topographic Position Index
+raster) is a lower-confidence proxy — a turbine wants an exposed ridge/hilltop,
+not a sheltered valley.
 """
 
 import logging
@@ -42,7 +43,8 @@ def score_wind(candidates: gpd.GeoDataFrame, config: Config) -> pd.Series:
     if wind_path.exists():
         means = grid_zonal_stats(candidates.geometry, wind_path, stats=("mean",))["mean"]
         scores = [_lookup_score(0.0 if np.isnan(m) else m, WIND_SPEED_THRESHOLDS) for m in means]
-        logger.info("Wind: scored from Global Wind Atlas raster")
+        logger.info("Wind: scored from Global Wind Atlas speed at %.0fm hub height",
+                    config.wind.hub_height_m)
         return pd.Series(scores, index=candidates.index, dtype=float)
 
     if exposure_path.exists():

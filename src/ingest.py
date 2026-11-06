@@ -700,24 +700,123 @@ def fetch_flood_polygons(
     return gdf
 
 
-def ingest_wind(config: Config) -> Path | None:
-    """Ingest Global Wind Atlas mean wind speed (100m) into ``processed/wind.tif``.
+def wind_speed_at_hub(
+    v_lo,
+    v_hi,
+    h_lo: float,
+    h_hi: float,
+    hub_m: float,
+    alpha_min: float | None = None,
+    alpha_max: float | None = None,
+    nodata: float | None = None,
+):
+    """Estimate mean wind speed at ``hub_m`` from two GWA layers, per pixel.
 
-    Reads only the study-area window from the remote Canada COG via /vsicurl/
-    range requests (no full download) and reprojects it to a working-CRS grid.
-    Makes the wind scorer use real wind resource instead of the terrain-exposure
-    proxy (and clears the 'wind_proxy_only' confidence penalty).
+    Fits a power-law shear profile v(z) = v_ref * (z / z_ref) ** alpha through
+    the two layers, with alpha = ln(v_hi / v_lo) / ln(h_hi / h_lo) clamped to
+    [alpha_min, alpha_max], and evaluates it at the hub height.
+
+    The profile is anchored on whichever layer is nearer the hub in log-height
+    (the 50 m layer for a 30 m hub). Where alpha isn't clamped the anchor makes
+    no difference (the profile passes through both points); where it is, the
+    nearer anchor keeps the estimate close to real data. That matters here:
+    GWA's 10 m layer over NS forest is inside the canopy (~0.3 m/s against
+    ~5 m/s at 50 m, raw alpha 1-2), so a 10 m anchor with a clamped alpha would
+    put a 30 m hub at <1 m/s, which no displacement-height log-law supports.
+
+    Pixels where either layer is non-finite or <= 0 get ``nodata``; the math
+    never sees them, so no NaN/inf is produced.
+
+    Returns ``(v_hub, stats)``: a float32 array shaped like the inputs, and a
+    dict of pixel counts (``valid``, ``invalid``, ``clamped_low``,
+    ``clamped_high``) for logging.
+    """
+    import numpy as np
+
+    from src.constants import WIND_NODATA, WIND_SHEAR_ALPHA_MAX, WIND_SHEAR_ALPHA_MIN
+
+    alpha_min = WIND_SHEAR_ALPHA_MIN if alpha_min is None else alpha_min
+    alpha_max = WIND_SHEAR_ALPHA_MAX if alpha_max is None else alpha_max
+    nodata = WIND_NODATA if nodata is None else nodata
+    if not 0 < h_lo < h_hi:
+        raise ValueError(f"need 0 < h_lo < h_hi, got {h_lo}, {h_hi}")
+    if not hub_m > 0:
+        raise ValueError(f"hub height must be > 0, got {hub_m}")
+    if alpha_min > alpha_max:
+        raise ValueError(f"alpha_min {alpha_min} > alpha_max {alpha_max}")
+
+    v_lo = np.asarray(v_lo, dtype="float64")
+    v_hi = np.asarray(v_hi, dtype="float64")
+    if v_lo.shape != v_hi.shape:
+        raise ValueError(f"layer shapes differ: {v_lo.shape} vs {v_hi.shape}")
+
+    valid = np.isfinite(v_lo) & np.isfinite(v_hi) & (v_lo > 0) & (v_hi > 0)
+    lo, hi = v_lo[valid], v_hi[valid]
+    raw_alpha = np.log(hi / lo) / np.log(h_hi / h_lo)
+    alpha = np.clip(raw_alpha, alpha_min, alpha_max)
+
+    if abs(np.log(hub_m / h_lo)) <= abs(np.log(hub_m / h_hi)):
+        anchor_v, anchor_h = lo, h_lo
+    else:
+        anchor_v, anchor_h = hi, h_hi
+
+    out = np.full(v_lo.shape, nodata, dtype="float32")
+    out[valid] = anchor_v * (hub_m / anchor_h) ** alpha
+    stats = {
+        "valid": int(valid.sum()),
+        "invalid": int((~valid).sum()),
+        "clamped_low": int((raw_alpha < alpha_min).sum()),
+        "clamped_high": int((raw_alpha > alpha_max).sum()),
+    }
+    return out, stats
+
+
+def _read_gwa_layer(url: str, bbox: tuple, working_crs: str, dst_transform, shape):
+    """Windowed /vsicurl/ read of one GWA COG, resampled (bilinear) onto the
+    working grid. Source nodata and resampling gaps come back as NaN."""
+    import numpy as np
+    import rasterio
+    from rasterio.warp import Resampling, reproject
+    from rasterio.windows import from_bounds as window_from_bounds
+
+    with rasterio.open(f"/vsicurl/{url}") as src:
+        b = gpd.GeoSeries([box(*bbox)], crs=working_crs).to_crs(src.crs).total_bounds
+        win = window_from_bounds(b[0], b[1], b[2], b[3], src.transform)
+        data = src.read(1, window=win)
+        src_transform = src.window_transform(win)
+        src_crs, src_nodata = src.crs, src.nodata
+
+    dst = np.full(shape, np.nan, dtype="float32")
+    reproject(
+        source=data, destination=dst,
+        src_transform=src_transform, src_crs=src_crs,
+        dst_transform=dst_transform, dst_crs=working_crs,
+        src_nodata=src_nodata, dst_nodata=np.nan, resampling=Resampling.bilinear,
+    )
+    return dst
+
+
+def ingest_wind(config: Config) -> Path | None:
+    """Ingest estimated mean wind speed at hub height into ``processed/wind.tif``.
+
+    Reads only the study-area window of two Global Wind Atlas Canada COGs
+    (``config.wind.gwa_layers``, default 10 m and 50 m) via /vsicurl/ range
+    requests (no full download), resamples both onto the working-CRS grid, and
+    writes the speed at ``config.wind.hub_height_m`` (default 30 m, a small
+    off-grid turbine) from a per-pixel power-law shear fit — see
+    `wind_speed_at_hub`. Makes the wind scorer use real wind resource instead
+    of the terrain-exposure proxy (and clears the 'wind_proxy_only' penalty).
+
+    Skips if wind.tif exists. A hub-height or source change is caught by the
+    processed-data manifest (src/manifest.py), which has `ingest --force`
+    delete the stale wind.tif so this regenerates it.
     """
     import os
 
     import numpy as np
-    import rasterio
     from rasterio.transform import from_bounds as transform_from_bounds
-    from rasterio.warp import Resampling, reproject
-    from rasterio.windows import from_bounds as window_from_bounds
-    from shapely.geometry import box
 
-    from src.constants import WIND_GWA_URL
+    from src.constants import WIND_INGEST_METHOD, WIND_NODATA
 
     processed = config.paths.processed
     working_crs = config.working_crs
@@ -726,39 +825,62 @@ def ingest_wind(config: Config) -> Path | None:
         logger.info("Wind already processed: %s", out_path)
         return out_path
 
+    hub = config.wind.hub_height_m
+    (h_lo, url_lo), (h_hi, url_hi) = sorted(config.wind.gwa_layers.items())
+
     os.environ.setdefault("GDAL_DISABLE_READDIR_ON_OPEN", "EMPTY_DIR")
     os.environ.setdefault("CPL_VSIL_CURL_ALLOWED_EXTENSIONS", ".tif")
     bbox = config.study_area.bbox
     res = float(config.cell_size_m)
-    try:
-        with rasterio.open(f"/vsicurl/{WIND_GWA_URL}") as src:
-            b = gpd.GeoSeries([box(*bbox)], crs=working_crs).to_crs(src.crs).total_bounds
-            win = window_from_bounds(b[0], b[1], b[2], b[3], src.transform)
-            data = src.read(1, window=win)
-            src_transform = src.window_transform(win)
-            src_crs, src_nodata = src.crs, src.nodata
-    except Exception:
-        logger.exception("GWA wind fetch failed; wind stays on the exposure proxy")
-        return None
-
     xmin, ymin, xmax, ymax = bbox
     w, h = int((xmax - xmin) / res), int((ymax - ymin) / res)
+    if w <= 0 or h <= 0:
+        logger.error("Study area %s is smaller than one %sm cell; wind not ingested", bbox, res)
+        return None
     dst_transform = transform_from_bounds(xmin, ymin, xmax, ymax, w, h)
-    dst = np.full((h, w), np.nan, dtype="float32")
-    reproject(
-        source=data, destination=dst,
-        src_transform=src_transform, src_crs=src_crs,
-        dst_transform=dst_transform, dst_crs=working_crs,
-        src_nodata=src_nodata, dst_nodata=np.nan, resampling=Resampling.bilinear,
-    )
+
+    try:
+        v_lo = _read_gwa_layer(url_lo, bbox, working_crs, dst_transform, (h, w))
+        v_hi = _read_gwa_layer(url_hi, bbox, working_crs, dst_transform, (h, w))
+    except Exception:
+        logger.exception("GWA wind fetch failed (%sm/%sm layers); wind stays on the exposure proxy",
+                         h_lo, h_hi)
+        return None
+
+    v_hub, stats = wind_speed_at_hub(v_lo, v_hi, h_lo, h_hi, hub)
+    if stats["valid"] == 0:
+        logger.error("GWA wind layers had no valid pixels over the study area; wind not ingested")
+        return None
+    if not np.isfinite(v_hub).all():  # guaranteed by wind_speed_at_hub; fail loudly if not
+        raise RuntimeError("wind_speed_at_hub produced non-finite values")
+    if not h_lo <= hub <= h_hi:
+        logger.warning("Wind hub height %.0fm is outside the GWA layers (%sm-%sm): extrapolating",
+                       hub, h_lo, h_hi)
+
     processed.mkdir(parents=True, exist_ok=True)
     meta = {"driver": "GTiff", "height": h, "width": w, "count": 1, "dtype": "float32",
-            "crs": working_crs, "transform": dst_transform, "nodata": np.nan, "compress": "lzw"}
-    with rasterio.open(out_path, "w", **meta) as d:
-        d.write(dst, 1)
-    valid = dst[np.isfinite(dst)]
-    logger.info("Wind processed: %s (%dx%d, %.1f-%.1f m/s)", out_path, w, h,
-                float(valid.min()) if valid.size else 0, float(valid.max()) if valid.size else 0)
+            "crs": working_crs, "transform": dst_transform, "nodata": WIND_NODATA, "compress": "lzw"}
+    # Write to a temp file and rename, so a failed write can't leave a partial
+    # wind.tif that skip-if-exists would then cache forever.
+    tmp_path = out_path.with_name(out_path.stem + ".partial.tif")
+    try:
+        with rasterio.open(tmp_path, "w", **meta) as d:
+            d.write(v_hub, 1)
+            d.update_tags(
+                hub_height_m=f"{hub:g}", method=WIND_INGEST_METHOD,
+                gwa_layers=";".join(f"{lvl}m={url}" for lvl, url in sorted(config.wind.gwa_layers.items())),
+            )
+        os.replace(tmp_path, out_path)
+    finally:
+        tmp_path.unlink(missing_ok=True)
+
+    valid = v_hub[v_hub != WIND_NODATA]
+    logger.info(
+        "Wind processed: %s (%dx%d, %.0fm hub from GWA %sm/%sm, %.1f-%.1f m/s, median %.1f; "
+        "%d nodata px; shear exponent clamped low on %d px, high on %d px)",
+        out_path, w, h, hub, h_lo, h_hi, float(valid.min()), float(valid.max()),
+        float(np.median(valid)), stats["invalid"], stats["clamped_low"], stats["clamped_high"],
+    )
     return out_path
 
 

@@ -42,6 +42,14 @@ doesn't catch this class of staleness (it tracks config drift, not ingestion-
 *code* changes) — worth remembering as a residual gap, not a false claim of
 completeness.
 
+**Update (2026-11-06), wind at small-turbine height:** wind now scores GWA's
+estimated speed at a 30 m hub (10 m + 50 m layers, power-law shear) instead of
+the 100 m layer, which nearly every parcel cleared. The manifest now carries a
+per-layer record for `wind.tif` (GWA URLs, hub height, ingest-method version).
+That closes the ingestion-code staleness gap above for this one layer: a
+pre-record `wind.tif` is refused, not baselined. Other layers still key on
+config only. Details: DATA-SOURCES §3.3, branch `wind-hub-30m`.
+
 **What's still open:** the §8 "soon"/"later" roadmap items — `export-snapshot`
 CLI, run provenance metadata, the calibration harness (still the single
 biggest open question — the ranking has never been checked against a known

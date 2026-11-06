@@ -19,7 +19,7 @@ paths:
 # hydro = scarce, hard-to-replicate differentiator + best winter generator.
 # open_ground = solar room + buildability (area-based; replaces old solar+buildable).
 # access = road/civic proximity (practicality gate).
-# wind = conditional winter-redundancy bonus (GWA raster or terrain-exposure proxy).
+# wind = conditional winter-redundancy bonus (GWA speed at hub height, or terrain-exposure proxy).
 # elevation = coastal-flood penalty only (no longer penalizes high/exposed ground).
 weights:
   hydro: 40
@@ -43,6 +43,17 @@ confidence_deductions:
   incomplete_land_cover_mask: 10
   no_road_evidence_200m: 15
   wind_proxy_only: 10
+
+# Wind resource (Global Wind Atlas). Scored as an estimated mean speed at a
+# small off-grid turbine's hub height, interpolated per pixel between the two
+# GWA layers below with a power-law shear profile. 30 m = a typical small-
+# turbine tower that clears ~20 m NS forest. Changing either setting
+# invalidates data/processed/wind.tif: `ingest --force` regenerates just that.
+wind:
+  hub_height_m: 30
+  gwa_layers:  # layer height (m) -> GWA mean wind speed COG (read by windowed /vsicurl/)
+    10: https://gwa.cdn.nazkamapps.com/country_tifs_v4/CAN_wind-speed_10m.tif
+    50: https://gwa.cdn.nazkamapps.com/country_tifs_v4/CAN_wind-speed_50m.tif
 
 # Exclusion settings
 exclusion_overlap_threshold: 0.5  # 50% overlap triggers hard exclusion
