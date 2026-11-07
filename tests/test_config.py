@@ -509,3 +509,75 @@ def test_partial_blocks_keep_the_other_defaults(tmp_path):
     cfg = load_config(_write(tmp_path, study_area={"bbox": BBOX}, paths={"output": "out2"}))
     assert cfg.study_area.name == "lunenburg"
     assert cfg.paths.raw == Path("data/raw") and cfg.paths.output == Path("out2")
+
+
+# --- confidence_deductions --------------------------------------------------
+
+@pytest.mark.parametrize("given", [
+    {"no_flood_data": 25},                      # used to drop every other deduction
+    {"hydro_20m_dem": 0, "wind_proxy_only": 12.5},
+    {},
+])
+def test_partial_confidence_deductions_merge_over_the_defaults(tmp_path, given):
+    from src.constants import CONFIDENCE_DEDUCTIONS
+
+    cfg = load_config(_write(tmp_path, confidence_deductions=given))
+    assert cfg.confidence_deductions == {**CONFIDENCE_DEDUCTIONS, **given}
+    assert set(cfg.confidence_deductions) == set(CONFIDENCE_DEDUCTIONS)
+
+
+def test_partial_confidence_deductions_keep_the_hydro_deduction_in_scoring(tmp_path):
+    import geopandas as gpd
+    from shapely.geometry import box
+
+    from src.scoring.confidence import compute_confidence
+
+    cfg = load_config(_write(tmp_path, confidence_deductions={"no_flood_data": 25}))
+    cells = gpd.GeoDataFrame({"status": ["eligible"], "score_access": [100.0], "score_hydro": [50.0]},
+                             geometry=[box(0, 0, 250, 250)], crs="EPSG:2961")
+    result = compute_confidence(cells, cfg, data_flags={"no_flood_data": True,
+                                                        "hydro_drainage_proxy_only": True})
+    assert result["confidence"].iloc[0] == 100 - 25 - 20  # was 75: the hydro 20 was dropped
+
+
+def test_confidence_deductions_default_to_a_copy_of_the_constants(tmp_path):
+    from src.constants import CONFIDENCE_DEDUCTIONS
+
+    before = dict(CONFIDENCE_DEDUCTIONS)
+    cfg = load_config(_write(tmp_path))
+    assert cfg.confidence_deductions == CONFIDENCE_DEDUCTIONS
+    cfg.confidence_deductions["no_flood_data"] = 99
+    load_config(_write(tmp_path, confidence_deductions={"hydro_20m_dem": 1}))
+    assert CONFIDENCE_DEDUCTIONS == before
+
+
+@pytest.mark.parametrize("typo", ["no_flod_data", "no_flood", "hydro_20m", "wind_proxy", "No_Flood_Data"])
+def test_unknown_confidence_deduction_raises_and_lists_the_allowed_ones(tmp_path, typo):
+    from src.constants import CONFIDENCE_DEDUCTIONS
+
+    with pytest.raises(ValueError) as e:
+        load_config(_write(tmp_path, confidence_deductions={"no_flood_data": 20, typo: 25}))
+    assert str(e.value) == (f"confidence_deductions: unknown key(s) [{typo!r}]; "
+                            f"allowed keys are {sorted(CONFIDENCE_DEDUCTIONS)}")
+
+
+@pytest.mark.parametrize("bad", [-1, -0.5, float("nan"), float("inf"), "20", True, None, [20]])
+def test_invalid_confidence_deduction_amount_raises_clearly(tmp_path, bad):
+    with pytest.raises(ValueError, match=r"confidence_deductions\.no_flood_data must be a finite number >= 0"):
+        load_config(_write(tmp_path, confidence_deductions={"no_flood_data": bad}))
+
+
+@pytest.mark.parametrize("good", [0, 0.0, 12.5, 100, 150])
+def test_confidence_deduction_edges_load(tmp_path, good):
+    cfg = load_config(_write(tmp_path, confidence_deductions={"hydro_20m_dem": good}))
+    assert cfg.confidence_deductions["hydro_20m_dem"] == good
+
+
+@pytest.mark.parametrize("text, message", [
+    ("confidence_deductions:\n", "confidence_deductions: is empty; it should hold points to deduct"),
+    ("confidence_deductions: [20, 20]\n", "confidence_deductions: must be a mapping"),
+    ("confidence_deductions: 20\n", "confidence_deductions: must be a mapping"),
+])
+def test_null_or_non_mapping_confidence_deductions_raise_clearly(tmp_path, text, message):
+    with pytest.raises(ValueError, match=message):
+        load_config(_write_raw(tmp_path, f"study_area:\n  bbox: {BBOX}\n{text}"))

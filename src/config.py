@@ -132,7 +132,7 @@ class Config:
     enabled_criteria: list[str] = field(
         default_factory=lambda: list(DEFAULT_WEIGHTS.keys())
     )
-    confidence_deductions: dict[str, int] = field(
+    confidence_deductions: dict[str, float] = field(
         default_factory=lambda: dict(CONFIDENCE_DEDUCTIONS)
     )
     exclusion_overlap_threshold: float = 0.5
@@ -306,6 +306,23 @@ def _enabled_criteria(enabled: object, weights: dict[str, float]) -> list[str]:
     return list(enabled)
 
 
+def _confidence_deductions(raw: dict) -> dict[str, float]:
+    """``confidence_deductions:`` merged over src.constants.CONFIDENCE_DEDUCTIONS,
+    so a block that sets one amount keeps the rest (a partial block used to
+    replace the defaults, so ``{no_flood_data: 25}`` alone dropped the hydro
+    deduction). Each amount is a finite number >= 0 of confidence points; the
+    allowed names are the defaults' keys."""
+    given = _block(raw, "confidence_deductions", CONFIDENCE_DEDUCTIONS,
+                   "points to deduct per data-quality gap, e.g. no_flood_data: 20")
+    for name, amount in given.items():
+        if not _finite_number(amount) or amount < 0:
+            raise ValueError(
+                f"confidence_deductions.{name} must be a finite number >= 0 (confidence points), "
+                f"got {amount!r}"
+            )
+    return {**CONFIDENCE_DEDUCTIONS, **given}
+
+
 def _load_preferences(raw: dict) -> dict:
     """``preferences:`` with ``parcel_aggregation`` range-checked and its
     defaults filled in, so src/score.py's ``.get(...)`` reads validated values.
@@ -380,9 +397,7 @@ def load_config(path: str | Path = "config.yaml") -> Config:
         paths=paths,
         weights=weights,
         enabled_criteria=enabled,
-        confidence_deductions=raw.get(
-            "confidence_deductions", dict(CONFIDENCE_DEDUCTIONS)
-        ),
+        confidence_deductions=_confidence_deductions(raw),
         exclusion_overlap_threshold=_overlap_threshold(
             raw.get("exclusion_overlap_threshold", DEFAULT_EXCLUSION_OVERLAP_THRESHOLD)
         ),
