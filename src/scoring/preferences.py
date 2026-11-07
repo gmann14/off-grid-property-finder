@@ -10,9 +10,12 @@ from src.config import Config
 from src.constants import (
     FLAG_PARCEL_BELOW_MIN_AREA,
     FLAG_PARCEL_NO_CANDIDATES,
+    FLAG_PARCEL_NOT_PROPERTY,
     FLAG_SEVERANCE_CANDIDATE,
     PARCEL_CELL_WEIGHT,
     PARCEL_LIGHT_MAX_BUILDINGS,
+    PARCEL_PLACEHOLDER_PID_PATTERN,
+    PARCEL_ROADWAT_NOT_PROPERTY,
     PARCEL_SIZE_THRESHOLDS,
     PARCEL_TOP_N_CELLS,
     PARCEL_TYPE_DEVELOPED,
@@ -55,6 +58,21 @@ def score_parcel_size(parcels: gpd.GeoDataFrame) -> pd.Series:
     )
 
 
+def not_property_mask(parcels: pd.DataFrame) -> pd.Series:
+    """True for parcel polygons that are not a property anyone can buy: NSPRD
+    road rights-of-way and water lots (their ``ROADWAT`` code, see
+    ``PARCEL_ROADWAT_NOT_PROPERTY``) and placeholder PIDs such as "00000006".
+    Missing columns mean nothing is masked."""
+    mask = pd.Series(False, index=parcels.index)
+    if "ROADWAT" in parcels.columns:
+        mask |= parcels["ROADWAT"].astype("string").str.strip().isin(
+            list(PARCEL_ROADWAT_NOT_PROPERTY)).fillna(False).astype(bool)
+    if "PID" in parcels.columns:
+        mask |= parcels["PID"].astype("string").str.fullmatch(
+            PARCEL_PLACEHOLDER_PID_PATTERN).fillna(False).astype(bool)
+    return mask
+
+
 def aggregate_to_parcels(
     candidates: gpd.GeoDataFrame,
     parcels: gpd.GeoDataFrame,
@@ -82,6 +100,10 @@ def aggregate_to_parcels(
     ``min_parcel_area_acres``; the SPEC's Stage B hard exclusion) keeps its
     ``cell_score`` but gets no score or rank, and is flagged
     ``parcel_below_min_area``.
+
+    Polygons that are not property (see ``not_property_mask``: road
+    rights-of-way, water lots, placeholder PIDs) are likewise kept unranked and
+    flagged ``parcel_not_property``.
     """
     # reset_index so the sjoin index_right -> parcels.index.map alignment can't
     # be corrupted by a duplicate/non-default parcel index.
@@ -149,7 +171,8 @@ def aggregate_to_parcels(
     no_candidates = parcels["cell_score"].isna()
     # NaN acreage (no geometry) compares False, so it isn't excluded here
     below_min = _scoring_acres(parcels) < min_area_acres
-    parcels.loc[no_candidates | below_min, "score"] = None
+    not_property = not_property_mask(parcels)
+    parcels.loc[no_candidates | below_min | not_property, "score"] = None
 
     # Rank scored parcels (best = 1), and flag the unscored ones
     parcels["rank"] = (
@@ -157,7 +180,8 @@ def aggregate_to_parcels(
     )
     flags = pd.Series([[] for _ in range(len(parcels))], index=parcels.index)
     for mask, flag in ((no_candidates, FLAG_PARCEL_NO_CANDIDATES),
-                       (below_min, FLAG_PARCEL_BELOW_MIN_AREA)):
+                       (below_min, FLAG_PARCEL_BELOW_MIN_AREA),
+                       (not_property, FLAG_PARCEL_NOT_PROPERTY)):
         for i in parcels.index[mask]:
             flags[i].append(flag)
     # then the flags of the top-N cells the parcel score rests on
@@ -168,8 +192,10 @@ def aggregate_to_parcels(
     assigned = int((~no_candidates).sum())
     logger.info(
         "Parcel aggregation: %d of %d parcels have assigned cells; %d of those "
-        "have under %.2f acres of land and are left unranked",
+        "have under %.2f acres of land and %d are not property (road, water lot or "
+        "placeholder PID); both are left unranked",
         assigned, len(parcels), int((~no_candidates & below_min).sum()), min_area_acres,
+        int((~no_candidates & not_property).sum()),
     )
     return parcels
 
@@ -215,7 +241,8 @@ def classify_parcels(
              else pd.Series(0.0, index=parcels.index))
     cell_score = parcels["cell_score"] if "cell_score" in parcels.columns else pd.Series(0.0, index=parcels.index)
     parcels["severance_candidate"] = (
-        (parcels["n_buildings"] >= 1)
+        ~not_property_mask(parcels)
+        & (parcels["n_buildings"] >= 1)
         & (parcels["n_buildings"] <= SEVERANCE_MAX_BUILDINGS)
         & (acres >= SEVERANCE_MIN_ACRES)
         & (cell_score.fillna(0) >= SEVERANCE_MIN_CELL_SCORE)

@@ -212,6 +212,18 @@ FLAG_HYDRO_LOW_CONFIDENCE = "hydro_low_confidence"
 FLAG_SOLAR_LOW_CONFIDENCE = "solar_low_confidence"
 FLAG_PARCEL_NO_CANDIDATES = "parcel_no_assigned_candidates"
 FLAG_PARCEL_BELOW_MIN_AREA = "parcel_below_min_area"  # under min_parcel_area_acres of land
+FLAG_PARCEL_NOT_PROPERTY = "parcel_not_property"  # road right-of-way, water lot or placeholder PID
+
+# NSPRD's ROADWAT field holds an ordinary parcel's own PID, and a code for
+# polygons that are a road right-of-way or a water lot. Measured 2026-11-07 on
+# the Lunenburg pull: "00000003" polygons (2,067) lie a median 99.7% within
+# 15 m of a mapped road and are long strips (median 4πA/P² 0.07 vs 0.62);
+# "00000002" polygons (1,310) are a median 99% water. Neither is land anyone can
+# buy, so they are never ranked (one highway strip had ranked 6th).
+PARCEL_ROADWAT_NOT_PROPERTY = {"00000002": "water lot", "00000003": "road right-of-way"}
+# Placeholder PIDs ("00000000", "00000006" in the pull): not single properties,
+# and nothing ViewPoint can look up.
+PARCEL_PLACEHOLDER_PID_PATTERN = r"0{7}\d"
 FLAG_WIND_PROXY_ONLY = "wind_exposure_proxy_only"  # no wind raster; TPI used
 FLAG_WIND_WORTH_IT = "wind_worth_it"  # good wind + limited solar room
 

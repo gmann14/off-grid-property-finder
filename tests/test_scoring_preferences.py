@@ -306,3 +306,34 @@ def test_severance_flag_appends_to_existing_parcel_flags():
     buildings = gpd.GeoDataFrame(geometry=[box(50, 50, 60, 60)], crs="EPSG:2961")
     result = classify_parcels(parcels, buildings).set_index("PID")
     assert result.loc["60010001", "flags"] == "parcel_below_min_area; severance_candidate"
+
+
+def test_road_and_water_polygons_and_placeholder_pids_are_never_ranked():
+    """NSPRD road rights-of-way (ROADWAT 00000003), water lots (00000002) and
+    placeholder PIDs are not property: one highway strip had ranked 6th."""
+    from src.scoring.preferences import not_property_mask
+
+    candidates, parcels = _three_parcels_with_cells()
+    parcels["land_acres"] = [2.0, 3.0, 2.0]
+    parcels["ROADWAT"] = ["A", "00000003", None]
+    result = aggregate_to_parcels(candidates, parcels).set_index("PID")
+    assert result.loc["A", "rank"] == 1
+    assert pd.isna(result.loc["B", "rank"]) and result.loc["B", "cell_score"] == pytest.approx(90.0)
+    assert result.loc["B", "flags"] == "parcel_not_property"
+
+    frame = pd.DataFrame({"PID": ["60554573", "00000006", "00000000", "10000006", None],
+                          "ROADWAT": ["60554573", "00000006", "00000000", "00000002", None]})
+    assert not_property_mask(frame).tolist() == [False, True, True, True, False]
+    assert not not_property_mask(pd.DataFrame({"x": [1]})).any()
+
+
+def test_road_right_of_way_is_never_a_severance_candidate():
+    parcels = gpd.GeoDataFrame(
+        {"PID": ["60000001", "60000002"], "ROADWAT": ["60000001", "00000003"],
+         "land_acres": [60.0, 60.0], "cell_score": [70.0, 70.0]},
+        geometry=[box(0, 0, 600, 600), box(600, 0, 1200, 600)], crs="EPSG:2961",
+    )
+    buildings = gpd.GeoDataFrame(geometry=[box(10, 10, 20, 20), box(610, 10, 620, 20)], crs="EPSG:2961")
+    result = classify_parcels(parcels, buildings).set_index("PID")
+    assert bool(result.loc["60000001", "severance_candidate"]) is True
+    assert bool(result.loc["60000002", "severance_candidate"]) is False
