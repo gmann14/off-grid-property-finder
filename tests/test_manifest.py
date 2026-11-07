@@ -357,3 +357,14 @@ def test_manifest_write_is_atomic(tmp_path, monkeypatch):
         record_layer(cfg, "wind")
     assert path.read_bytes() == before
     assert not list(cfg.paths.processed.glob("*.tmp"))
+
+
+def test_renaming_the_study_area_is_not_stale_and_deletes_nothing(tmp_path):
+    cfg = _cfg(tmp_path)
+    check_and_update_manifest(cfg)
+    kept = cfg.paths.processed / "parcels.gpkg"
+    kept.write_text("x")
+    renamed = _cfg(tmp_path, study_area=StudyArea(bbox=BBOX, name="lunenburg-south"))
+    verify_manifest_fresh(renamed)          # must not raise
+    check_and_update_manifest(renamed)      # must not raise or clear anything
+    assert kept.exists()

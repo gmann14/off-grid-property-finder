@@ -44,7 +44,10 @@ MANIFEST_FILENAME = ".manifest.json"
 
 # Config fields that define what a processed/ directory's outputs represent.
 # If any of these change, the cached outputs no longer match the config.
-_TRACKED_FIELDS = ("study_area_name", "study_area_bbox", "cell_size_m", "working_crs")
+# ``study_area_name`` is recorded but not tracked: it is only a label (the map
+# tooltip), and treating a rename as stale made `--force` delete every
+# processed file, REST-fetched parcels included, for no change in the data.
+_TRACKED_FIELDS = ("study_area_bbox", "cell_size_m", "working_crs")
 
 # Glob patterns for the generated files a `--force` rebuild clears. The
 # manifest itself is excluded (it's rewritten separately) and raw data in

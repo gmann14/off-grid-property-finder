@@ -27,5 +27,7 @@ Public-safe source of truth for project work. Keep private locations, credential
 - [x] Exported rankings break score ties by PID, so a tied parcel's place no longer depends on unrelated rows (7,135 of 8,085 ranked parcels share a rank; ranks, scores and every top-N set unchanged, only the order inside ties) (2026-11-07).
 - [x] `python -m src snapshot` rebuilds the committed `results/` from `output/ranked_parcels.csv` (it was a scratch script outside the repo); on today's output it reproduces `results/` byte for byte, and it refuses a missing, empty or half-written export (2026-11-07).
 - [x] The map's formula panel is built from the config it was made with (weights, enabled criteria, parcel formula, minimum acres); it hardcoded 40/20/15/15/10, so any weight change made the map describe a formula that wasn't used (2026-11-07).
+- [x] The map draws excluded cells again: they read back from the GPKG with score NaN, not None, so the "Excluded" layer was always empty (18,970 of 40,000 cells missing while the legend showed them). They are now one grey layer, dissolved by sorted exclusion reason (7 groups, +0.24 MB). `visualize` also checks the processed-data manifest like `score`, and `visualize` and `ingest-parcels` exit 1 when they produce nothing (2026-11-07).
+- [x] Renaming the study area no longer marks data/processed/ stale: the name is only a map label, but `--force` then deleted every processed file, REST-fetched parcels included (2026-11-07).
 
 - [x] Created public-safe task source of truth.
