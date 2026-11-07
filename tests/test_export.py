@@ -138,6 +138,32 @@ def test_parcel_csv_adds_confidence_and_top_criteria_after_the_existing_columns(
                                "confidence", "confidence_band", "top_hydro", "top_access"]
 
 
+def test_cell_csvs_lead_with_cell_id(tmp_path):
+    """Regression: scored_cells.csv and ranked_eligible.csv had no cell_id, so
+    a row couldn't be joined back to scored_cells.gpkg."""
+    candidates = gpd.GeoDataFrame(
+        {"cell_id": [7, 9], "status": ["eligible", "eligible"],
+         "score": [40.0, 75.0], "rank": [2, 1]},
+        geometry=[box(380000, 4900000, 380250, 4900250),
+                  box(380250, 4900000, 380500, 4900250)],
+        crs="EPSG:2961",
+    )
+    export_results(candidates, tmp_path)
+    cells = pd.read_csv(tmp_path / "scored_cells.csv")
+    ranked = pd.read_csv(tmp_path / "ranked_eligible.csv")
+    assert cells.columns[0] == "cell_id" and cells["cell_id"].tolist() == [7, 9]
+    assert ranked.columns[0] == "cell_id" and ranked["cell_id"].tolist() == [9, 7]
+
+
+def test_cell_id_index_is_exported_as_the_first_column(tmp_path, small_grid):
+    candidates = small_grid.assign(status="eligible", score=50.0, rank=1)
+    assert candidates.index.name == "cell_id"
+    export_results(candidates, tmp_path)
+    cells = pd.read_csv(tmp_path / "scored_cells.csv")
+    assert cells.columns[0] == "cell_id"
+    assert cells["cell_id"].tolist() == small_grid.index.tolist()
+
+
 def test_export_without_status_column_treats_cells_as_eligible(tmp_path):
     """Regression: ``candidates[candidates.get("status") != "excluded"]`` is
     ``candidates[True]`` when the column is missing, a KeyError."""

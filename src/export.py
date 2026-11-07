@@ -10,6 +10,7 @@ logger = logging.getLogger("property_finder")
 
 # Columns to include in CSV export
 CSV_COLUMNS = [
+    "cell_id",  # joins a CSV row back to scored_cells.gpkg / candidate_grid.gpkg
     "status", "score", "score_allrounder", "rank",
     "score_hydro", "score_access", "score_open_ground", "score_wind", "score_elevation",
     "score_solar", "score_buildable",  # legacy criteria, present only if enabled
@@ -36,6 +37,8 @@ PARCEL_CSV_EXTRA_COLUMNS = [
 def export_results(candidates: gpd.GeoDataFrame, output_dir: Path) -> None:
     """Export scored cells to CSV and GeoJSON."""
     output_dir.mkdir(parents=True, exist_ok=True)
+    if "cell_id" not in candidates.columns and candidates.index.name == "cell_id":
+        candidates = candidates.reset_index()  # a grid straight from generate_candidate_grid
 
     # CSV (no geometry)
     csv_cols = [c for c in CSV_COLUMNS if c in candidates.columns]
