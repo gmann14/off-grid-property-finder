@@ -150,3 +150,28 @@ def test_add_parcels_no_score_column_includes_all(tmp_path):
     _add_parcels(m, parcels_path)  # must not raise
     folium.LayerControl().add_to(m)
     assert "60010001" in m.get_root().render()
+
+
+def test_formula_panel_shows_the_configured_weights_and_parcel_formula(tmp_path):
+    from src.visualize import _formula_panel_html
+
+    cfg, _ = _cfg(tmp_path)
+    cfg.weights = {"hydro": 50, "access": 30, "open_ground": 20, "wind": 0, "elevation": 0}
+    cfg.preferences = {"parcel_aggregation": {"top_n": 5, "cell_weight": 0.8}}
+    cfg.min_parcel_area_acres = 2.5
+    html = _formula_panel_html(cfg)
+    assert ">50%<" in html and ">30%<" in html and ">20%<" in html
+    assert "Wind" not in html and "Elevation" not in html     # weight 0: omitted
+    assert "0.80 &times; mean(top 5 cells) + 0.20 &times;" in html
+    assert "under 2.5 acres of land" in html
+
+
+def test_formula_panel_defaults_match_config_yaml():
+    from src.config import load_config
+    from src.visualize import _formula_panel_html
+
+    html = _formula_panel_html(load_config("config.yaml"))
+    for pct in (">40%<", ">20%<", ">15%<", ">10%<"):
+        assert pct in html
+    assert "0.65 &times; mean(top 3 cells) + 0.35 &times;" in html
+    assert "under 1 acre of land" in html

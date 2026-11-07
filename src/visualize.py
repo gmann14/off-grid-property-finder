@@ -468,6 +468,75 @@ def _add_parcels(m, parcels_path: Path):
     logger.info("Added %d scored parcels to map", len(parcels))
 
 
+# Label, colour and one-line description for each criterion in the formula panel.
+_CRITERION_INFO = {
+    "hydro": ("Micro-Hydro", "#2166ac", "Nearby stream, flow (drainage), head"),
+    "access": ("Access", "#e31a1c", "Distance to nearest road"),
+    "open_ground": ("Open ground", "#4a9e4a", "Flat, open, unbuilt land (solar room)"),
+    "wind": ("Wind", "#7e57c2", "Wind resource / ridge exposure"),
+    "elevation": ("Elevation", "#6B4226", "Coastal-flood penalty (low ground)"),
+    "solar": ("Solar", "#f4a582", "Solar exposure"),
+    "buildable": ("Buildable", "#8c8c8c", "Buildable share of the cell"),
+}
+
+
+def _formula_panel_html(config: Config) -> str:
+    """The map's scoring-formula panel, built from the config the map was made
+    with, so the weights and parcel formula shown are the ones used to score."""
+    from src.constants import PARCEL_CELL_WEIGHT, PARCEL_TOP_N_CELLS
+
+    weights = {k: v for k, v in config.enabled_weights().items() if v > 0}
+    rows = []
+    for i, (name, weight) in enumerate(sorted(weights.items(), key=lambda kv: -kv[1])):
+        label, colour, desc = _CRITERION_INFO.get(
+            name, (name.replace("_", " ").capitalize(), "#333333", ""))
+        border = ' style="border-bottom:1px solid #eee;"' if i < len(weights) - 1 else ""
+        rows.append(
+            f'<tr{border}><td style="padding:4px 0;"><b style="color:{colour};">{label}</b></td>'
+            f'<td style="padding:4px 8px; text-align:right; white-space:nowrap;"><b>{weight:.0f}%</b></td>'
+            f'<td style="padding:4px 0; color:#555;">{desc}</td></tr>'
+        )
+    agg = config.preferences.get("parcel_aggregation", {}) or {}
+    top_n = agg.get("top_n", PARCEL_TOP_N_CELLS)
+    cell_w = float(agg.get("cell_weight", PARCEL_CELL_WEIGHT))
+    min_acres = f"{config.min_parcel_area_acres:g}"
+    acre_word = "acre" if min_acres == "1" else "acres"
+    return f"""
+    <div id="formula-panel" style="
+        position: fixed;
+        top: 12px; left: 55px;
+        background: white;
+        border: 2px solid #666;
+        border-radius: 6px;
+        padding: 14px 18px;
+        font-size: 13px;
+        font-family: Arial, sans-serif;
+        z-index: 9999;
+        box-shadow: 2px 2px 6px rgba(0,0,0,0.3);
+        max-width: 340px;
+        line-height: 1.5;
+    ">
+        <div style="display:flex; justify-content:space-between; align-items:center;">
+            <b style="font-size: 15px;">Off-Grid Suitability Score</b>
+            <span onclick="document.getElementById('formula-panel').style.display='none'"
+                  style="cursor:pointer; color:#999; font-size:18px; margin-left:12px;">&times;</span>
+        </div>
+        <hr style="margin: 6px 0;">
+        <table style="width:100%; border-collapse:collapse; font-size: 12.5px;">
+            {"".join(rows)}
+        </table>
+        <hr style="margin: 6px 0;">
+        <span style="font-size: 11px; color: #888;">
+            Cell score (shown) = weighted sum. An "all-rounder" geometric-mean<br>
+            score is also exported for true do-it-all parcels.<br>
+            Parcel score = {cell_w:.2f} &times; mean(top {top_n} cells) + {1 - cell_w:.2f} &times; land-acreage score.<br>
+            Cells in protected areas, flood zones or mostly water are excluded.<br>
+            Parcel acreage counts land only; parcels under {min_acres} {acre_word} of land are unranked.
+        </span>
+    </div>
+    """
+
+
 def run_visualize(config: Config, logger: logging.Logger) -> None:
     """Generate an interactive Folium map from scored output."""
     try:
@@ -657,64 +726,7 @@ def run_visualize(config: Config, logger: logging.Logger) -> None:
     m.get_root().html.add_child(folium.Element(legend_html))
 
     # --- Scoring formula panel ---
-    formula_html = """
-    <div id="formula-panel" style="
-        position: fixed;
-        top: 12px; left: 55px;
-        background: white;
-        border: 2px solid #666;
-        border-radius: 6px;
-        padding: 14px 18px;
-        font-size: 13px;
-        font-family: Arial, sans-serif;
-        z-index: 9999;
-        box-shadow: 2px 2px 6px rgba(0,0,0,0.3);
-        max-width: 340px;
-        line-height: 1.5;
-    ">
-        <div style="display:flex; justify-content:space-between; align-items:center;">
-            <b style="font-size: 15px;">Off-Grid Suitability Score</b>
-            <span onclick="document.getElementById('formula-panel').style.display='none'"
-                  style="cursor:pointer; color:#999; font-size:18px; margin-left:12px;">&times;</span>
-        </div>
-        <hr style="margin: 6px 0;">
-        <table style="width:100%; border-collapse:collapse; font-size: 12.5px;">
-            <tr style="border-bottom:1px solid #eee;">
-                <td style="padding:4px 0;"><b style="color:#2166ac;">Micro-Hydro</b></td>
-                <td style="padding:4px 8px; text-align:right; white-space:nowrap;"><b>40%</b></td>
-                <td style="padding:4px 0; color:#555;">Nearby stream, flow (drainage), head</td>
-            </tr>
-            <tr style="border-bottom:1px solid #eee;">
-                <td style="padding:4px 0;"><b style="color:#e31a1c;">Access</b></td>
-                <td style="padding:4px 8px; text-align:right;"><b>20%</b></td>
-                <td style="padding:4px 0; color:#555;">Distance to nearest road</td>
-            </tr>
-            <tr style="border-bottom:1px solid #eee;">
-                <td style="padding:4px 0;"><b style="color:#4a9e4a;">Open ground</b></td>
-                <td style="padding:4px 8px; text-align:right;"><b>15%</b></td>
-                <td style="padding:4px 0; color:#555;">Flat, open, unbuilt land (solar room)</td>
-            </tr>
-            <tr style="border-bottom:1px solid #eee;">
-                <td style="padding:4px 0;"><b style="color:#7e57c2;">Wind</b></td>
-                <td style="padding:4px 8px; text-align:right;"><b>15%</b></td>
-                <td style="padding:4px 0; color:#555;">Wind resource / ridge exposure</td>
-            </tr>
-            <tr>
-                <td style="padding:4px 0;"><b style="color:#6B4226;">Elevation</b></td>
-                <td style="padding:4px 8px; text-align:right;"><b>10%</b></td>
-                <td style="padding:4px 0; color:#555;">Coastal-flood penalty (low ground)</td>
-            </tr>
-        </table>
-        <hr style="margin: 6px 0;">
-        <span style="font-size: 11px; color: #888;">
-            Composite (shown) = weighted sum. An "all-rounder" geometric-mean<br>
-            score is also exported for true do-it-all parcels.<br>
-            Cells in protected areas, flood zones or mostly water are excluded.<br>
-            Parcel acreage counts land only; parcels under __MIN_ACRES__ acre(s) of land are unranked.
-        </span>
-    </div>
-    """
-    formula_html = formula_html.replace("__MIN_ACRES__", f"{config.min_parcel_area_acres:g}")
+    formula_html = _formula_panel_html(config)
     m.get_root().html.add_child(folium.Element(formula_html))
 
     # Save map
