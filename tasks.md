@@ -13,8 +13,10 @@ Public-safe source of truth for project work. Keep private locations, credential
 
 - [ ] Triage the current local/private backlog into public-safe tracked tasks.
 - [ ] Review the `wind-hub-30m` before/after numbers (wind at a 30 m small-turbine hub instead of GWA 100 m, plus the separate water-cell and land-acres commits on top), then merge or adjust. Branch is unmerged and unpushed.
-- [ ] After the Good/Maybe/Bad property labels exist, recheck the wind bands, the 30 m hub default and the `wind_worth_it` cut-offs (wind ≥65, open ground ≤40) against them.
+- [ ] After the Good/Maybe/Bad property labels exist, recheck the wind bands, the 30 m hub default, the `wind_worth_it` cut-offs (wind ≥65, open ground ≤40) and the severance cell-score cut-off (`SEVERANCE_MIN_CELL_SCORE = 50`) against them. The severance cut-off is absolute and was kept at 50 for now (2026-11-07), although the 30 m bands lowered the whole score scale: 23 July candidates fell from 50–55 to 46–50 and dropped out (severance 86 → 58 on `wind-hub-30m`).
 - [ ] Consider per-layer manifest records for the other remote/derived layers (parcels, flood, DEM derivatives). Only `wind.tif` records its source and method so far.
+- [ ] After `wind-hub-30m` is merged, decide whether to reimport the scores into the real-estate-eval atlas. It holds the 8,840 July scores; a reimport would leave 407 of those PIDs unscored and add 46. `area_acres` is unchanged, and `land_acres` / `water_share` are new columns only.
+- [ ] `min_parcel_area_acres` in `config.yaml` is parsed but used nowhere. Remove it, or make parcel ingest drop parcels under it; the latter would remove the ~390 ranked parcels under 1 acre, a ranking change to review first.
 
 ## Done
 

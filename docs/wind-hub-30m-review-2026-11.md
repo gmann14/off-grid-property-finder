@@ -30,6 +30,19 @@ whose centroid is in water goes to the parcel holding most of its land). This
 reproduces the July baseline exactly (241 / 122).
 "Distance to sea" uses connected areas of DEM ≤ 0 m of at least 2 km².
 
+## Decisions (2026-11-07)
+
+Graham said to go with the recommendations in this review:
+
+- **Water:** cells are excluded by water overlap only, not by "centre in water
+  or overlap" as first asked, and a shore cell goes to the parcel holding most
+  of its land. See "Water cells excluded".
+- **Severance cut-off:** stays at a cell score of 50 for now. It is rechecked
+  with the wind bands once the Good/Maybe/Bad labels exist (`tasks.md`).
+- **Land acres:** no sliver tolerance. See "Land acres".
+- **Still open:** merging the branch, and whether to reimport the scores into
+  the real-estate-eval atlas afterwards (`tasks.md`).
+
 ## Method
 
 Per 250 m cell:
@@ -480,9 +493,10 @@ severance rule use `land_acres` instead of `area_acres`.
     20.5 → 14.0), `60290228` (127 → 378, 5.6 → 3.6) and `60303062` (#5 →
     26, 52.8 → 48.2).
 
-**Not done:** the bands are hard steps, so a sliver of mapped water can move
-a parcel a band. No sliver tolerance is applied, which affects the 9 parcels
-above.
+**Sliver tolerance: decided against (2026-11-07).** The bands are hard
+steps, so a sliver of mapped water can move a parcel a band. That affects the
+9 parcels above, none in the top 200, and a tolerance would just move the
+edge.
 
 ## Stress test
 
