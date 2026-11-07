@@ -55,7 +55,7 @@ def _dem_cfg(tmp_path):
 def test_shore_cell_is_scored_on_its_land_not_the_sea(tmp_path, small_grid):
     """Regression: the mean took in the sea pixels (DEM <= 0) of a shore cell,
     so a cell whose land averages 8 m (score 40) averaged 4.4 m and scored 10
-    (47 real cells)."""
+    (78 eligible real cells changed band)."""
     import numpy as np
 
     dem = np.full((100, 100), 8.0)

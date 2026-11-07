@@ -91,7 +91,7 @@ def test_south_bonus_counts_south_facing_open_ground(tmp_path, small_grid):
 
 
 def test_no_south_bonus_without_open_ground(tmp_path, small_grid):
-    """Regression: 10,182 real cells with 0% open ground scored 10, not 0."""
+    """Regression: 11,168 eligible real cells with no open ground scored 10, not 0."""
     _write(tmp_path / "buildability_mask.tif", np.zeros((100, 100)), "uint8", 255)
     _write(tmp_path / "aspect.tif", np.full((100, 100), 180.0), "float32", -9999)
     assert (score_open_ground(small_grid, _cfg(tmp_path)) == 0).all()
