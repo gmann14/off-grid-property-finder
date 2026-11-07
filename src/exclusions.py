@@ -23,6 +23,16 @@ logger = logging.getLogger("property_finder")
 # score hydro >= 60.
 _OVERLAP_ONLY_REASONS = frozenset({"water"})
 
+# The order reasons are listed in ``exclusion_reasons`` (the order
+# load_exclusions loads the layers); any other reason follows, alphabetically.
+_REASON_ORDER = ("protected_area", "flood_zone", "water")
+
+
+def _join_reasons(reasons) -> str:
+    """``reasons`` as one "; "-joined string in ``_REASON_ORDER``."""
+    rank = {r: i for i, r in enumerate(_REASON_ORDER)}
+    return "; ".join(sorted(set(reasons), key=lambda r: (rank.get(r, len(rank)), r)))
+
 
 def _polygonal(geom):
     """The polygonal part of ``geom`` (None if it has none). make_valid can
@@ -101,6 +111,9 @@ def apply_exclusions(
     - The fraction of the cell covered by exclusion polygons, counting any
       area covered by several polygons once, reaches the configured threshold.
 
+    An excluded cell's ``exclusion_reasons`` lists every layer that holds its
+    centroid or covers part of it, in ``_REASON_ORDER``.
+
     Returns the candidates GeoDataFrame with 'status' and 'exclusion_reasons' columns.
     """
     candidates = candidates.copy()
@@ -119,48 +132,49 @@ def apply_exclusions(
     by_centroid = exclusions[~exclusions["exclusion_reason"].isin(_OVERLAP_ONLY_REASONS)]
     centroid_joins = gpd.sjoin(centroid_gdf, by_centroid, how="left", predicate="within")
     excluded_by_centroid = centroid_joins.dropna(subset=["exclusion_reason"])
+    reasons: dict = {}
+    for idx, reason in zip(excluded_by_centroid.index, excluded_by_centroid["exclusion_reason"]):
+        reasons.setdefault(idx, set()).add(reason)
 
-    for idx in excluded_by_centroid.index.unique():
-        reasons = excluded_by_centroid.loc[[idx], "exclusion_reason"].unique()
+    # Overlap: a spatial join (STRtree-accelerated) narrows the cells to the
+    # cell/exclusion pairs that actually touch, then the exact intersection
+    # area is computed once per pair via a vectorized elementwise
+    # GeoSeries.intersection(), not a per-cell loop. Every cell is joined, so
+    # a cell already excluded by its centroid also lists the layers covering
+    # it; only the others need the covered area.
+    pairs = gpd.sjoin(candidates[["geometry"]], exclusions, how="inner", predicate="intersects")
+    if not pairs.empty:
+        left = candidates.geometry.reindex(pairs.index)
+        right = exclusions.geometry.reindex(pairs["index_right"].values)
+        right.index = pairs.index
+        pieces = left.intersection(right)
+        keep = (pieces.area > 0).values
+        pairs, pieces = pairs[keep], pieces[keep]
+        pairs = pairs.assign(_overlap_area=pieces.area.values)
+        undecided = ~pairs.index.isin(list(reasons))
+        # Covered area per undecided cell. Summing the pieces would count twice
+        # any area under two polygons (e.g. sea that is also a mapped flood
+        # zone), so cells touched by more than one polygon use the area of
+        # the union of their pieces instead.
+        covered = pairs.loc[undecided, "_overlap_area"].groupby(level=0).sum()
+        multi = pairs.index[undecided & pairs.index.duplicated()].unique()
+        for idx in multi:
+            covered[idx] = shapely.union_all(pieces.loc[[idx]].values).area
+
+        for idx, group in pairs.groupby(level=0):
+            if idx in reasons:
+                reasons[idx].update(group["exclusion_reason"])
+                continue
+            cell_area = candidates.geometry.loc[idx].area
+            if cell_area == 0:
+                continue
+            if covered[idx] / cell_area >= overlap_threshold:
+                reasons[idx] = set(group["exclusion_reason"])
+
+    if reasons:
+        idx = list(reasons)
         candidates.loc[idx, "status"] = "excluded"
-        candidates.loc[idx, "exclusion_reasons"] = "; ".join(reasons)
-
-    # Check overlap fraction for cells not already excluded.
-    #
-    # Previously this intersected every eligible cell against every exclusion
-    # polygon (O(cells x exclusion_features) — e.g. ~40k cells x ~2k flood
-    # polygons). A spatial join (STRtree-accelerated) first narrows this down
-    # to only the cell/exclusion pairs that actually touch — cells fully
-    # inside or fully outside an exclusion never reach the exact-area step —
-    # then exact intersection area is computed once per matched pair via a
-    # vectorized elementwise GeoSeries.intersection(), not a per-cell loop.
-    eligible_mask = candidates["status"] == "eligible"
-    if eligible_mask.any():
-        eligible = candidates.loc[eligible_mask, ["geometry"]]
-        pairs = gpd.sjoin(eligible, exclusions, how="inner", predicate="intersects")
-        if not pairs.empty:
-            left = candidates.geometry.reindex(pairs.index)
-            right = exclusions.geometry.reindex(pairs["index_right"].values)
-            right.index = pairs.index
-            pieces = left.intersection(right)
-            pairs = pairs.assign(_overlap_area=pieces.area.values)
-            # Covered area per cell. Summing the pieces would count twice any
-            # area under two polygons (e.g. sea that is also a mapped flood
-            # zone), so cells touched by more than one polygon use the area of
-            # the union of their pieces instead.
-            covered = pairs["_overlap_area"].groupby(level=0).sum()
-            multi = pairs.index[pairs.index.duplicated()].unique()
-            for idx in multi:
-                covered[idx] = shapely.union_all(pieces.loc[[idx]].values).area
-
-            for idx, group in pairs.groupby(pairs.index):
-                cell_area = candidates.geometry.loc[idx].area
-                if cell_area == 0:
-                    continue
-                if covered[idx] / cell_area >= overlap_threshold:
-                    reasons = group.loc[group["_overlap_area"] > 0, "exclusion_reason"].unique()
-                    candidates.loc[idx, "status"] = "excluded"
-                    candidates.loc[idx, "exclusion_reasons"] = "; ".join(reasons)
+        candidates.loc[idx, "exclusion_reasons"] = [_join_reasons(reasons[i]) for i in idx]
 
     excluded = candidates["status"] == "excluded"
     by_reason = candidates.loc[excluded, "exclusion_reasons"].str.split("; ").explode().value_counts()

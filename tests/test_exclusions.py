@@ -180,6 +180,37 @@ def test_area_under_two_layers_is_counted_once(tmp_path):
     assert set(result["exclusion_reasons"].iloc[0].split("; ")) == {"water", "flood_zone"}
 
 
+def test_exclusion_reasons_come_out_in_one_fixed_order():
+    """Regression: reasons came out in spatial-join order, so the same pair of
+    layers read "water; flood_zone" on some cells and "flood_zone; water" on
+    others (1,605 real cells, split 906 / 699)."""
+    xmin, ymin, grid = _cell()
+    top = box(xmin, ymin + 160, xmin + 250, ymin + 250)     # 36%, misses the centroid
+    bottom = box(xmin, ymin, xmin + 250, ymin + 90)         # 36%, misses the centroid
+    for order in (["water", "flood_zone"], ["flood_zone", "water"]):
+        exclusions = gpd.GeoDataFrame(
+            {"exclusion_reason": order}, geometry=[top, bottom], crs=CRS,
+        )
+        result = apply_exclusions(grid, exclusions)
+        assert result["status"].iloc[0] == "excluded"
+        assert result["exclusion_reasons"].iloc[0] == "flood_zone; water"
+
+
+def test_centroid_excluded_cell_also_lists_its_overlap_reasons():
+    """Regression: a cell excluded because its centre is in a protected area
+    left out the water covering a third of it."""
+    xmin, ymin, grid = _cell()
+    exclusions = gpd.GeoDataFrame(
+        {"exclusion_reason": ["water", "protected_area"]},
+        geometry=[box(xmin, ymin + 160, xmin + 250, ymin + 250),   # 36% water
+                  box(xmin + 100, ymin + 100, xmin + 150, ymin + 150)],  # tiny, holds the centre
+        crs=CRS,
+    )
+    result = apply_exclusions(grid, exclusions)
+    assert result["status"].iloc[0] == "excluded"
+    assert result["exclusion_reasons"].iloc[0] == "protected_area; water"
+
+
 def test_invalid_water_polygons_are_repaired(tmp_path):
     """The real waterbodies layer has 3 invalid (self-intersecting) polygons."""
     xmin, ymin, grid = _cell()
