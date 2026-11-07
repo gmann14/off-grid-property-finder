@@ -15,7 +15,7 @@ paths:
   processed: data/processed
   output: output
 
-# Scoring weights (must sum to 100 for enabled criteria).
+# Scoring weights (renormalised to 100 over the enabled criteria; each >= 0).
 # hydro = scarce, hard-to-replicate differentiator + best winter generator.
 # open_ground = solar room + buildability (area-based; replaces old solar+buildable).
 # access = road/civic proximity (practicality gate).

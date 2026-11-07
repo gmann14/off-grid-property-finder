@@ -29,5 +29,6 @@ Public-safe source of truth for project work. Keep private locations, credential
 - [x] The map's formula panel is built from the config it was made with (weights, enabled criteria, parcel formula, minimum acres); it hardcoded 40/20/15/15/10, so any weight change made the map describe a formula that wasn't used (2026-11-07).
 - [x] The map draws excluded cells again: they read back from the GPKG with score NaN, not None, so the "Excluded" layer was always empty (18,970 of 40,000 cells missing while the legend showed them). They are now one grey layer, dissolved by sorted exclusion reason (7 groups, +0.24 MB). `visualize` also checks the processed-data manifest like `score`, and `visualize` and `ingest-parcels` exit 1 when they produce nothing (2026-11-07).
 - [x] Renaming the study area no longer marks data/processed/ stale: the name is only a map label, but `--force` then deleted every processed file, REST-fetched parcels included (2026-11-07).
+- [x] `config.yaml` is validated at load: range and type checks for the bbox, CRS, cell size, weights, overlap threshold and parcel aggregation; unknown keys and empty blocks are errors; a partial `confidence_deductions` block merges over the defaults instead of replacing them (2026-11-07).
 
 - [x] Created public-safe task source of truth.

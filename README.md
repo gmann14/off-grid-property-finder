@@ -101,12 +101,19 @@ Options: `--config path/to/config.yaml`, `--log-level DEBUG|INFO|WARNING|ERROR`
 
 Edit `config.yaml` to customize:
 
-- **study_area**: Bounding box (EPSG:2961) and name
-- **cell_size_m**: Grid cell size (default: 250m)
-- **weights**: Scoring weights per criterion (auto-renormalized)
-- **enabled_criteria**: Which criteria to include
-- **confidence_deductions**: Penalty values for data quality gaps
-- **exclusion_overlap_threshold**: Fraction of cell area triggering exclusion (default: 0.5)
+- **study_area**: `bbox: [xmin, ymin, xmax, ymax]` in the working CRS's metres (xmin < xmax, ymin < ymax; a lon/lat box is rejected) and a `name` (a label only)
+- **working_crs**: A projected CRS in metres (default `EPSG:2961`)
+- **cell_size_m**: Grid cell size, a whole number of metres > 0 (default: 250)
+- **paths**: `raw`, `processed`, `output` folders
+- **weights**: Per criterion (`hydro`, `access`, `open_ground`, `wind`, `elevation`, `solar`, `buildable`), each ≥ 0; the enabled ones are renormalised to 100 and must sum to more than 0
+- **enabled_criteria**: Which of those names to score (default: every weighted criterion)
+- **confidence_deductions**: Penalty per data-quality gap; a partial block is merged over the defaults; amounts ≥ 0
+- **exclusion_overlap_threshold**: Fraction of a cell's area, in (0, 1], that triggers exclusion (default: 0.5; a fraction, not a percent)
+- **min_parcel_area_acres**: Parcels with less land than this are unranked (default: 1; 0 turns it off)
+- **preferences.parcel_aggregation**: `top_n` (≥ 1, default 3) and `cell_weight` (in [0, 1], default 0.65) for the parcel score
+- **wind**: `hub_height_m` and `gwa_layers` (see DATA-SOURCES §3.3)
+
+Unknown keys (e.g. a misspelt `weight:`), empty blocks and an empty file are errors, so a typo can't silently fall back to a default. An empty `preferences:` or `wind:` means the defaults.
 
 ## Data
 
