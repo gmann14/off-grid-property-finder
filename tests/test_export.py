@@ -90,6 +90,19 @@ def test_export_empty_geodataframe(tmp_path):
     assert (tmp_path / "scored_cells.csv").exists()
 
 
+def test_export_without_status_column_treats_cells_as_eligible(tmp_path):
+    """Regression: ``candidates[candidates.get("status") != "excluded"]`` is
+    ``candidates[True]`` when the column is missing, a KeyError."""
+    candidates = gpd.GeoDataFrame(
+        {"score": [75.0, 60.0], "rank": [1, 2]},
+        geometry=[box(380000, 4900000, 380250, 4900250),
+                  box(380250, 4900000, 380500, 4900250)],
+        crs="EPSG:2961",
+    )
+    export_results(candidates, tmp_path)
+    assert len(pd.read_csv(tmp_path / "ranked_eligible.csv")) == 2
+
+
 def _tied_parcels(pids):
     return gpd.GeoDataFrame(
         {"PID": pids, "score": [70.0] * len(pids), "rank": [1] * len(pids)},

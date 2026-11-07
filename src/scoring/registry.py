@@ -5,6 +5,7 @@ from typing import Callable
 
 import geopandas as gpd
 import numpy as np
+import pandas as pd
 
 from src.config import Config
 from src.constants import WIND_WORTH_IT_OPEN_GROUND_MAX, WIND_WORTH_IT_WIND_MIN
@@ -95,9 +96,9 @@ def compute_composite_score(
             & (candidates["score_open_ground"] <= WIND_WORTH_IT_OPEN_GROUND_MAX)
         )
 
-    # Null out excluded cells
-    excluded = candidates.get("status") == "excluded"
-    if excluded is not None and excluded.any():
+    # Null out excluded cells (no status column = every cell is eligible)
+    excluded = candidates.get("status", pd.Series("eligible", index=candidates.index)) == "excluded"
+    if excluded.any():
         candidates.loc[excluded, "score"] = None
         candidates.loc[excluded, "score_allrounder"] = None
         if "wind_worth_it" in candidates.columns:

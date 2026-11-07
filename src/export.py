@@ -4,6 +4,7 @@ import logging
 from pathlib import Path
 
 import geopandas as gpd
+import pandas as pd
 
 logger = logging.getLogger("property_finder")
 
@@ -55,7 +56,8 @@ def export_results(candidates: gpd.GeoDataFrame, output_dir: Path) -> None:
         logger.exception("Failed to export GeoJSON")
 
     # Eligible-only ranked view
-    eligible = candidates[candidates.get("status") != "excluded"].copy()
+    status = candidates.get("status", pd.Series("eligible", index=candidates.index))
+    eligible = candidates[status != "excluded"].copy()
     if not eligible.empty:
         eligible_sorted = eligible.sort_values("rank", kind="stable")  # ties keep grid order
         eligible_csv = eligible_sorted[[c for c in csv_cols if c in eligible_sorted.columns]].copy()

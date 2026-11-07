@@ -134,6 +134,15 @@ def test_no_score_columns_present_no_crash():
     assert result["confidence"].iloc[0] == 100.0
 
 
+def test_no_status_column_counts_every_cell_as_eligible():
+    """Regression: with no ``status`` column, ``candidates.get("status") ==
+    "excluded"`` was a plain False and ``False.any()`` raised AttributeError."""
+    gdf = gpd.GeoDataFrame({"score": [70.0]}, geometry=[box(0, 0, 250, 250)], crs="EPSG:2961")
+    result = compute_confidence(gdf, _make_config(), data_flags={})
+    assert result["confidence"].iloc[0] == 100.0
+    assert result["confidence_band"].iloc[0] == "high"
+
+
 def test_flags_string_content_single_and_combined():
     """Regression for the vectorized rewrite: the joined flags string must
     match exactly what the old per-row loop produced — single flag as-is, both

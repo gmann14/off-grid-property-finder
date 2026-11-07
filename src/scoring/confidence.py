@@ -96,9 +96,9 @@ def compute_confidence(
         bands[(confidence >= low) & (confidence <= high)] = label
     candidates["confidence_band"] = bands
 
-    # Null out confidence for excluded cells
-    excluded = candidates.get("status") == "excluded"
-    if excluded is not None and excluded.any():
+    # Null out confidence for excluded cells (no status column = all eligible)
+    excluded = candidates.get("status", pd.Series("eligible", index=candidates.index)) == "excluded"
+    if excluded.any():
         candidates.loc[excluded, "confidence"] = None
         candidates.loc[excluded, "confidence_band"] = None
 

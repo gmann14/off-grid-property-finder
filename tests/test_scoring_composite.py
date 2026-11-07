@@ -187,3 +187,24 @@ def test_failing_scorer_fails_the_run_naming_the_criterion():
     finally:
         del _REGISTRY["_test_ok"]
         del _REGISTRY["_test_broken"]
+
+
+def test_composite_without_status_column_does_not_crash():
+    """Regression: ``candidates.get("status") == "excluded"`` is ``None ==
+    "excluded"`` (a plain False) when the column is missing, and ``False.any()``
+    raised AttributeError."""
+    @register("_test_d")
+    def _d(candidates, config):
+        return pd.Series(75.0, index=candidates.index)
+
+    grid = gpd.GeoDataFrame(geometry=[box(0, 0, 1, 1)], crs="EPSG:2961")
+    cfg = Config(
+        study_area=StudyArea(bbox=(0, 0, 1, 1)),
+        weights={"_test_d": 100},
+        enabled_criteria=["_test_d"],
+    )
+    try:
+        result = compute_composite_score(grid, cfg)
+        assert result["score"].iloc[0] == pytest.approx(75.0)
+    finally:
+        del _REGISTRY["_test_d"]
