@@ -16,7 +16,13 @@ from shapely.geometry import box
 
 from src.config import Config
 from src.constants import WORKING_CRS
-from src.raw_layers import RAW_LAYERS, files_by_source, find_raw_files, search_locations
+from src.raw_layers import (
+    RAW_LAYERS,
+    AmbiguousRawDataError,
+    files_by_source,
+    raw_files_to_read,
+    search_locations,
+)
 
 logger = logging.getLogger("property_finder")
 
@@ -193,6 +199,38 @@ def _fill_dem_from(ext, ext_transform, nodata, inside, have, fill_path: Path, wo
     return int(filled.sum())
 
 
+def _read_raw_files(files: list[Path], label: str, working_crs: str,
+                    layer_for=None, drop_duplicates: bool = False) -> gpd.GeoDataFrame:
+    """Read ``files`` (from `raw_files_to_read`), logging each, reproject each
+    to the working CRS and concatenate them. A single file comes back exactly
+    as read and reprojected. ``layer_for(path)`` may name the layer to read
+    in a multi-layer file. ``drop_duplicates`` drops rows whose geometry is
+    exactly that of an earlier row (the same feature in two files)."""
+    import pandas as pd
+
+    frames = []
+    for src_file in files:
+        layer = layer_for(src_file) if layer_for else None
+        if layer:
+            logger.info("Ingesting %s from %s (layer: %s)", label, src_file, layer)
+            gdf = gpd.read_file(src_file, layer=layer)
+        else:
+            logger.info("Ingesting %s from %s", label, src_file)
+            gdf = gpd.read_file(src_file)
+        frames.append(_reproject_to_working(gdf, working_crs))
+    if len(frames) == 1:
+        return frames[0]
+    frames = [f.set_crs(working_crs, allow_override=True) for f in frames]
+    gdf = gpd.GeoDataFrame(pd.concat(frames, ignore_index=True), crs=working_crs)
+    if drop_duplicates:
+        dup = gdf.geometry.to_wkb().duplicated()
+        if dup.any():
+            logger.info("Dropped %d %s feature(s) repeated in more than one file", int(dup.sum()), label)
+            gdf = gdf[~dup].reset_index(drop=True)
+    logger.info("Read %d %s features from %d files", len(gdf), label, len(files))
+    return gdf
+
+
 def ingest_dem(config: Config) -> Path | None:
     """Find and reproject the DEM to the working CRS, clipped to study area.
 
@@ -344,7 +382,7 @@ def ingest_streams(config: Config) -> Path | None:
         return out_path
 
     # GDB first (NSHN), else a shapefile — see src/raw_layers.py
-    candidates = find_raw_files(raw, "streams")
+    candidates = raw_files_to_read(raw, "streams")
     if not candidates:
         logger.warning("No stream data found in %s", search_locations(raw, "streams"))
         return None
@@ -391,7 +429,7 @@ def ingest_roads_from_osm(config: Config) -> Path | None:
         return out_path
 
     # OSM PBF first, else a GPKG, else a shapefile — see src/raw_layers.py
-    candidates = find_raw_files(raw, "roads")
+    candidates = raw_files_to_read(raw, "roads")
     if not candidates:
         logger.warning("No road data found in %s", search_locations(raw, "roads"))
         return None
@@ -438,17 +476,14 @@ def ingest_buildings(config: Config) -> Path | None:
         logger.info("Buildings already processed: %s", out_path)
         return out_path
 
-    # GPKGs (searched recursively), else shapefiles — see src/raw_layers.py
-    candidates = find_raw_files(raw, "buildings")
+    # Every GPKG (searched recursively), else every shapefile: footprints come
+    # in tiles — see src/raw_layers.py
+    candidates = raw_files_to_read(raw, "buildings")
     if not candidates:
         logger.warning("No building data found in %s", search_locations(raw, "buildings"))
         return None
 
-    src_file = candidates[0]
-    logger.info("Ingesting buildings from %s", src_file)
-
-    gdf = gpd.read_file(src_file)
-    gdf = _reproject_to_working(gdf, config.working_crs)
+    gdf = _read_raw_files(candidates, "buildings", config.working_crs, drop_duplicates=True)
 
     # Clip to study area
     bbox_geom = box(*config.study_area.bbox)
@@ -471,16 +506,12 @@ def ingest_land_cover(config: Config) -> Path | None:
         return out_path
 
     # Look for polygon shapefile — see src/raw_layers.py
-    candidates = find_raw_files(raw, "land_cover")
+    candidates = raw_files_to_read(raw, "land_cover")
     if not candidates:
         logger.warning("No land cover data found in %s", search_locations(raw, "land_cover"))
         return None
 
-    src_file = candidates[0]
-    logger.info("Ingesting land cover from %s", src_file)
-
-    gdf = gpd.read_file(src_file)
-    gdf = _reproject_to_working(gdf, config.working_crs)
+    gdf = _read_raw_files(candidates, "land cover", config.working_crs)
 
     # Clip to study area
     bbox_geom = box(*config.study_area.bbox)
@@ -502,16 +533,12 @@ def ingest_crown_land(config: Config) -> Path | None:
         logger.info("Crown land already processed: %s", out_path)
         return out_path
 
-    candidates = find_raw_files(raw, "crown_land")
+    candidates = raw_files_to_read(raw, "crown_land")
     if not candidates:
         logger.warning("No Crown land data found in %s", search_locations(raw, "crown_land"))
         return None
 
-    src_file = candidates[0]
-    logger.info("Ingesting Crown land from %s", src_file)
-
-    gdf = gpd.read_file(src_file)
-    gdf = _reproject_to_working(gdf, config.working_crs)
+    gdf = _read_raw_files(candidates, "Crown land", config.working_crs)
 
     # Clip to study area
     bbox_geom = box(*config.study_area.bbox)
@@ -533,17 +560,14 @@ def ingest_protected_areas(config: Config) -> Path | None:
         logger.info("Protected areas already processed: %s", out_path)
         return out_path
 
-    # Look for shapefile in exclusions directory (may be in subdirectory)
-    shp_candidates = find_raw_files(raw, "protected_areas")
+    # Every shapefile in exclusions/protected_areas/, else the one shapefile
+    # under exclusions/ (several there is refused) — see src/raw_layers.py
+    shp_candidates = raw_files_to_read(raw, "protected_areas")
     if not shp_candidates:
         logger.warning("No protected areas data found in %s", search_locations(raw, "protected_areas"))
         return None
 
-    src_file = shp_candidates[0]
-    logger.info("Ingesting protected areas from %s", src_file)
-
-    gdf = gpd.read_file(src_file)
-    gdf = _reproject_to_working(gdf, config.working_crs)
+    gdf = _read_raw_files(shp_candidates, "protected areas", config.working_crs)
 
     # Clip to study area
     bbox_geom = box(*config.study_area.bbox)
@@ -843,6 +867,33 @@ def fetch_nsprd_parcels(
     return combined.to_crs(working_crs)
 
 
+def _parcel_layer(path: Path) -> str | None:
+    """The layer to read from a multi-layer parcel file (.gdb / .gpkg); None
+    for a single-layer file (read as is). Takes the only polygon layer, else
+    the only polygon layer named like parcels/property; raises
+    `AmbiguousRawDataError` when that doesn't single one out."""
+    import re
+
+    import pyogrio
+
+    if path.suffix.lower() not in (".gdb", ".gpkg"):
+        return None
+    layers = [(str(name), str(geom or "")) for name, geom in pyogrio.list_layers(path)]
+    if len(layers) <= 1:
+        return None
+    polygons = [name for name, geom in layers if "polygon" in geom.lower()]
+    if len(polygons) == 1:
+        return polygons[0]
+    named = [name for name in polygons if re.search(r"parcel|property", name, re.IGNORECASE)]
+    if len(named) == 1:
+        return named[0]
+    raise AmbiguousRawDataError(
+        f"parcels: {path} holds {len(polygons)} polygon layers ({', '.join(polygons)}) and none "
+        "is singled out as the parcels (by being the only one, or the only one named like "
+        "parcel/property). Export the parcel layer to its own file in data/raw/parcels/."
+    )
+
+
 def ingest_parcels(
     config: Config,
     source: str = "local",
@@ -882,17 +933,14 @@ def ingest_parcels(
         if gdf is None or gdf.empty:
             return None
     else:
-        candidates = find_raw_files(raw, "parcels")
+        candidates = raw_files_to_read(raw, "parcels")
         if not candidates:
             logger.warning(
                 "No parcel data found in %s — download NSPRD parcels (GeoNOVA) "
                 "or run `ingest-parcels --from-rest`", raw / "parcels"
             )
             return None
-        src_file = candidates[0]
-        logger.info("Ingesting parcels from %s", src_file)
-        gdf = gpd.read_file(src_file)
-        gdf = _reproject_to_working(gdf, config.working_crs)
+        gdf = _read_raw_files(candidates, "parcels", config.working_crs, layer_for=_parcel_layer)
 
     # One self-intersecting parcel makes the clip (and the dissolve) raise a
     # GEOS TopologyException, so repair invalid polygons first.
@@ -1351,13 +1399,12 @@ def ingest_waterbodies(config: Config) -> Path | None:
         logger.info("Waterbodies already processed: %s", out_path)
         return out_path
 
-    candidates = find_raw_files(raw, "waterbodies")
+    candidates = raw_files_to_read(raw, "waterbodies")
     if not candidates:
         logger.info("No waterbody polygon layer found (optional); skipping")
         return None
 
-    gdf = gpd.read_file(candidates[0])
-    gdf = _reproject_to_working(gdf, config.working_crs)
+    gdf = _read_raw_files(candidates, "waterbodies", config.working_crs)
     bbox_geom = box(*config.study_area.bbox)
     gdf = gdf[gdf.intersects(bbox_geom)].copy()
     if gdf.empty:
@@ -1379,8 +1426,6 @@ def ingest_civic(config: Config) -> Path | None:
     the study area. scoring/access.py reads the output: a civic address in a
     cell scores access 100.
     """
-    import pandas as pd
-
     raw = config.paths.raw
     processed = config.paths.processed
     out_path = processed / "civic.gpkg"
@@ -1389,17 +1434,13 @@ def ingest_civic(config: Config) -> Path | None:
         logger.info("Civic addresses already processed: %s", out_path)
         return out_path
 
-    candidates = find_raw_files(raw, "civic")
+    candidates = raw_files_to_read(raw, "civic")
     if not candidates:
         logger.info("No civic address data found in %s (optional); skipping",
                     search_locations(raw, "civic"))
         return None
 
-    frames = []
-    for src_file in candidates:
-        logger.info("Ingesting civic addresses from %s", src_file)
-        frames.append(_reproject_to_working(gpd.read_file(src_file), config.working_crs))
-    gdf = gpd.GeoDataFrame(pd.concat(frames, ignore_index=True), crs=config.working_crs)
+    gdf = _read_raw_files(candidates, "civic addresses", config.working_crs)
     gdf = gdf[gdf.geometry.notna() & ~gdf.geometry.is_empty]
 
     bbox_geom = box(*config.study_area.bbox)

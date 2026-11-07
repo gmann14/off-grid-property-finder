@@ -7,7 +7,14 @@ import geopandas as gpd
 import rasterio
 
 from src.config import Config
-from src.raw_layers import RAW_LAYERS, RawLayer, find_raw_files, search_locations
+from src.raw_layers import (
+    RAW_LAYERS,
+    AmbiguousRawDataError,
+    RawLayer,
+    find_raw_files,
+    raw_files_to_read,
+    search_locations,
+)
 
 # Layers that `prepare`/`ingest` fetch directly from a remote service into
 # data/processed/ — they need no raw file at all, so they're checked separately
@@ -128,6 +135,16 @@ def run_check_data(config: Config, logger: logging.Logger) -> dict[str, dict]:
             logger.warning("%s: %s — %s (looked in %s)", layer_name, status, spec.description,
                            search_locations(raw_dir, layer_name))
             results[layer_name] = {"status": status, "description": spec.description}
+            continue
+        try:
+            raw_files_to_read(raw_dir, layer_name)
+        except AmbiguousRawDataError as e:
+            # ingest refuses this layer until the extra files are moved
+            logger.error("%-18s AMBIGUOUS  %s", layer_name, e)
+            results[layer_name] = {
+                "status": "AMBIGUOUS (several files, one expected)", "error": str(e),
+                "files": [str(f) for f in files], "description": spec.description,
+            }
             continue
 
         result = _check_files(files, spec, logger)
