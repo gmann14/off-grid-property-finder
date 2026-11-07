@@ -7,7 +7,8 @@ from rasterio.transform import from_bounds
 
 from src.config import Config, Paths, StudyArea
 from src.constants import OPEN_GROUND_PERCENT_THRESHOLDS
-from src.scoring.open_ground import _lookup_score, score_open_ground
+from src.scoring.bands import band_score
+from src.scoring.open_ground import score_open_ground
 
 CRS = "EPSG:2961"
 BBOX = (380000.0, 4900000.0, 381000.0, 4901000.0)
@@ -31,9 +32,9 @@ def _cfg(tmp_path):
 
 
 def test_lookup_thresholds():
-    assert _lookup_score(50, OPEN_GROUND_PERCENT_THRESHOLDS) == 100
-    assert _lookup_score(25, OPEN_GROUND_PERCENT_THRESHOLDS) == 85
-    assert _lookup_score(1, OPEN_GROUND_PERCENT_THRESHOLDS) == 0
+    assert band_score(50, OPEN_GROUND_PERCENT_THRESHOLDS) == 100
+    assert band_score(25, OPEN_GROUND_PERCENT_THRESHOLDS) == 85
+    assert band_score(1, OPEN_GROUND_PERCENT_THRESHOLDS) == 0
 
 
 def test_open_ground_discriminates_by_area(tmp_path, small_grid):

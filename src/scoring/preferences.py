@@ -26,16 +26,10 @@ from src.constants import (
     SEVERANCE_MIN_CELL_SCORE,
     SQ_M_PER_ACRE,
 )
+from src.scoring.bands import band_score
 from src.scoring.confidence import confidence_band, order_flags
 
 logger = logging.getLogger("property_finder")
-
-
-def _lookup_score(value: float, thresholds: list[tuple]) -> int:
-    for low, high, score in thresholds:
-        if low <= value < high:
-            return score
-    return 0
 
 
 def _scoring_acres(parcels: gpd.GeoDataFrame) -> pd.Series:
@@ -52,7 +46,7 @@ def _scoring_acres(parcels: gpd.GeoDataFrame) -> pd.Series:
 def score_parcel_size(parcels: gpd.GeoDataFrame) -> pd.Series:
     """Score parcels by land acres (see ``_scoring_acres``)."""
     return pd.Series(
-        [_lookup_score(a, PARCEL_SIZE_THRESHOLDS) for a in _scoring_acres(parcels)],
+        [band_score(a, PARCEL_SIZE_THRESHOLDS) for a in _scoring_acres(parcels)],
         index=parcels.index,
         dtype=float,
     )

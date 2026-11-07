@@ -3,25 +3,26 @@
 import pandas as pd
 import pytest
 
-from src.scoring.elevation import _lookup_score, score_elevation
+from src.scoring.bands import band_score
+from src.scoring.elevation import score_elevation
 from src.constants import ELEVATION_THRESHOLDS
 
 
 def test_lookup_score_in_range():
     # Redesign: elevation is now a coastal-flood penalty only.
-    assert _lookup_score(50, ELEVATION_THRESHOLDS) == 100   # safe above surge
-    assert _lookup_score(15, ELEVATION_THRESHOLDS) == 70    # marginal low coastal
-    assert _lookup_score(7, ELEVATION_THRESHOLDS) == 40     # low coastal, real risk
-    assert _lookup_score(3, ELEVATION_THRESHOLDS) == 10     # tidal/surge zone
+    assert band_score(50, ELEVATION_THRESHOLDS) == 100   # safe above surge
+    assert band_score(15, ELEVATION_THRESHOLDS) == 70    # marginal low coastal
+    assert band_score(7, ELEVATION_THRESHOLDS) == 40     # low coastal, real risk
+    assert band_score(3, ELEVATION_THRESHOLDS) == 10     # tidal/surge zone
 
 
 def test_high_ground_no_longer_penalized():
     # The whole point of the redesign: high, exposed ground (good for wind)
     # must score full marks, not be penalized like the old table did.
-    assert _lookup_score(150, ELEVATION_THRESHOLDS) == 100
-    assert _lookup_score(300, ELEVATION_THRESHOLDS) == 100
-    assert _lookup_score(20, ELEVATION_THRESHOLDS) == 100   # boundary: safe start
-    assert _lookup_score(-1, ELEVATION_THRESHOLDS) == 0     # below sea level
+    assert band_score(150, ELEVATION_THRESHOLDS) == 100
+    assert band_score(300, ELEVATION_THRESHOLDS) == 100
+    assert band_score(20, ELEVATION_THRESHOLDS) == 100   # boundary: safe start
+    assert band_score(-1, ELEVATION_THRESHOLDS) == 0     # below sea level
 
 
 def test_score_elevation_with_fixture(small_grid, config_with_paths):

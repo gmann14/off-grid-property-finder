@@ -22,17 +22,11 @@ from src.constants import (
     OPEN_GROUND_SOUTH_FRACTION,
     SOLAR_ACCEPTABLE_ASPECT,
 )
+from src.scoring.bands import band_score
 from src.scoring.registry import register
 from src.zonal import grid_zonal_stats
 
 logger = logging.getLogger("property_finder")
-
-
-def _lookup_score(value: float, thresholds: list[tuple]) -> int:
-    for low, high, score in thresholds:
-        if low <= value < high:
-            return score
-    return 0
 
 
 @register("open_ground")
@@ -47,7 +41,7 @@ def score_open_ground(candidates: gpd.GeoDataFrame, config: Config) -> pd.Series
 
     # Buildable mask is 0/1 (nodata 255) → mean = fraction open/buildable ground.
     means = grid_zonal_stats(candidates.geometry, mask_path, stats=("mean",), nodata=255)["mean"]
-    base = [0 if np.isnan(m) else _lookup_score(m * 100, OPEN_GROUND_PERCENT_THRESHOLDS) for m in means]
+    base = [0 if np.isnan(m) else band_score(m * 100, OPEN_GROUND_PERCENT_THRESHOLDS) for m in means]
 
     south = _open_ground_south_share(candidates, mask_path, aspect_path)
 

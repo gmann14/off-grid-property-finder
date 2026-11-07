@@ -8,7 +8,8 @@ import rasterio
 from rasterio.transform import from_bounds
 from shapely.geometry import LineString, box
 
-from src.scoring.hydro import _estimate_flow_rate, _estimate_power, _lookup_score, score_hydro
+from src.scoring.bands import band_score
+from src.scoring.hydro import _estimate_flow_rate, _estimate_power, score_hydro
 from src.constants import HYDRO_POWER_THRESHOLDS, MIN_DRAINAGE_AREA_KM2, SPECIFIC_RUNOFF_LOW
 
 
@@ -35,15 +36,15 @@ def test_estimate_power_zero_head():
 
 
 def test_lookup_hydro_high_power():
-    assert _lookup_score(2500, HYDRO_POWER_THRESHOLDS) == 100
+    assert band_score(2500, HYDRO_POWER_THRESHOLDS) == 100
 
 
 def test_lookup_hydro_medium_power():
-    assert _lookup_score(1500, HYDRO_POWER_THRESHOLDS) == 80
+    assert band_score(1500, HYDRO_POWER_THRESHOLDS) == 80
 
 
 def test_lookup_hydro_low_power():
-    assert _lookup_score(30, HYDRO_POWER_THRESHOLDS) == 0
+    assert band_score(30, HYDRO_POWER_THRESHOLDS) == 0
 
 
 def test_waco_connector_no_false_hydro(tmp_path):

@@ -19,6 +19,7 @@ from src.constants import (
     SOLAR_OPTIMAL_SLOPE,
     SOLAR_PERCENT_THRESHOLDS,
 )
+from src.scoring.bands import band_score
 from src.scoring.registry import register
 
 logger = logging.getLogger("property_finder")
@@ -77,13 +78,6 @@ def _classify_solar_vectorized(aspect: np.ndarray, slope: np.ndarray) -> np.ndar
     return result
 
 
-def _lookup_score(value: float, thresholds: list[tuple]) -> int:
-    for low, high, score in thresholds:
-        if low <= value < high:
-            return score
-    return 0
-
-
 @register("solar")
 def score_solar(candidates: gpd.GeoDataFrame, config: Config) -> pd.Series:
     """Score cells by percentage of area with qualifying solar aspect/slope.
@@ -129,7 +123,7 @@ def score_solar(candidates: gpd.GeoDataFrame, config: Config) -> pd.Series:
             classifications = _classify_solar_vectorized(asp_valid, slp_valid)
             qualifying = (classifications >= 1).sum()
             pct = (qualifying / len(asp_valid)) * 100
-            scores.append(_lookup_score(pct, SOLAR_PERCENT_THRESHOLDS))
+            scores.append(band_score(pct, SOLAR_PERCENT_THRESHOLDS))
         except Exception:
             scores.append(0)
 

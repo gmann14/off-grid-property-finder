@@ -8,16 +8,10 @@ import pandas as pd
 
 from src.config import Config
 from src.constants import BUILDABLE_PERCENT_THRESHOLDS
+from src.scoring.bands import band_score
 from src.scoring.registry import register
 
 logger = logging.getLogger("property_finder")
-
-
-def _lookup_score(value: float, thresholds: list[tuple]) -> int:
-    for low, high, score in thresholds:
-        if low <= value < high:
-            return score
-    return 0
 
 
 @register("buildable")
@@ -50,6 +44,6 @@ def score_buildable(candidates: gpd.GeoDataFrame, config: Config) -> pd.Series:
         else:
             # mean of 0/1 mask = fraction buildable
             pct = mean_val * 100
-            scores.append(_lookup_score(pct, BUILDABLE_PERCENT_THRESHOLDS))
+            scores.append(band_score(pct, BUILDABLE_PERCENT_THRESHOLDS))
 
     return pd.Series(scores, index=candidates.index, dtype=float)

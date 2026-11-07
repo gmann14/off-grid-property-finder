@@ -9,18 +9,11 @@ import pandas as pd
 
 from src.config import Config
 from src.constants import ELEVATION_THRESHOLDS, SEA_LEVEL_M
+from src.scoring.bands import band_score
 from src.scoring.registry import register
 from src.zonal import grid_zonal_stats
 
 logger = logging.getLogger("property_finder")
-
-
-def _lookup_score(value: float, thresholds: list[tuple]) -> int:
-    """Look up a score from a threshold table. First match wins."""
-    for low, high, score in thresholds:
-        if low <= value < high:
-            return score
-    return 0
 
 
 @register("elevation")
@@ -42,12 +35,12 @@ def score_elevation(candidates: gpd.GeoDataFrame, config: Config) -> pd.Series:
     means = np.where(np.isnan(land), whole, land)
 
     scores = [
-        50 if np.isnan(m) else _lookup_score(m, ELEVATION_THRESHOLDS)  # no DEM → neutral 50
+        50 if np.isnan(m) else band_score(m, ELEVATION_THRESHOLDS)  # no DEM → neutral 50
         for m in means
     ]
     shore = sum(
         1 for w, s in zip(whole, scores)
-        if not np.isnan(w) and _lookup_score(w, ELEVATION_THRESHOLDS) != s
+        if not np.isnan(w) and band_score(w, ELEVATION_THRESHOLDS) != s
     )
     if shore:
         logger.info("Elevation: %d shore cells scored on their land pixels "

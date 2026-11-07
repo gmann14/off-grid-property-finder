@@ -28,6 +28,7 @@ from src.constants import (
     SPECIFIC_RUNOFF_LOW,
     STREAM_BUFFER_M,
 )
+from src.scoring.bands import band_score
 from src.scoring.registry import register
 
 logger = logging.getLogger("property_finder")
@@ -187,13 +188,6 @@ def _estimate_power(flow_m3s: float, head_m: float, efficiency: float = DEFAULT_
     """Estimate hydro power in watts: P = η * ρ * g * Q * H."""
     rho = 1000.0  # water density kg/m³
     return efficiency * rho * GRAVITY * flow_m3s * head_m
-
-
-def _lookup_score(value: float, thresholds: list[tuple]) -> int:
-    for low, high, score in thresholds:
-        if low <= value < high:
-            return score
-    return 0
 
 
 def _channel_elevations(dem_src, xy: np.ndarray) -> np.ndarray:
@@ -580,7 +574,7 @@ def score_hydro(candidates: gpd.GeoDataFrame, config: Config) -> pd.Series:
         best = np.maximum(best, _fallback_powers(
             candidates, streams.iloc[no_dem], first[no_dem], drainage, cell_zonal))
 
-    scores = [_lookup_score(p, HYDRO_POWER_THRESHOLDS) for p in best]
+    scores = [band_score(p, HYDRO_POWER_THRESHOLDS) for p in best]
     return pd.Series(scores, index=candidates.index, dtype=float)
 
 
