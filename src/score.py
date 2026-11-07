@@ -6,7 +6,7 @@ from pathlib import Path
 import geopandas as gpd
 
 from src.config import Config
-from src.exclusions import apply_exclusions, load_exclusions
+from src.exclusions import apply_exclusions, load_exclusions, parcel_assignment_points
 from src.export import export_ranked_parcels, export_results
 
 # Import scorers to trigger registration
@@ -61,12 +61,14 @@ def run_score(config: Config, logger: logging.Logger, limit: int | None = None) 
     logger.info("=== Step 1: Applying exclusions ===")
     protected_path = processed / "protected_areas.gpkg"
     flood_path = processed / "flood.gpkg"
+    water_path = processed / "waterbodies.gpkg"  # lakes, rivers and the sea
 
     exclusions = load_exclusions(
         protected_path=protected_path if protected_path.exists() else None,
         flood_path=flood_path if flood_path.exists() else None,
         working_crs=config.working_crs,
         study_bbox=config.study_area.bbox,
+        water_path=water_path if water_path.exists() else None,
     )
 
     candidates = apply_exclusions(
@@ -105,6 +107,10 @@ def run_score(config: Config, logger: logging.Logger, limit: int | None = None) 
             parcels,
             top_n=agg.get("top_n", PARCEL_TOP_N_CELLS),
             cell_weight=agg.get("cell_weight", PARCEL_CELL_WEIGHT),
+            # shore cells whose centre is just offshore go to the parcel
+            # holding their land, not to a water lot
+            assign_points=parcel_assignment_points(
+                candidates[candidates["status"] != "excluded"], exclusions, parcels),
         )
         # Type parcels (land-only / developed / severance) from building footprints
         buildings_path = processed / "buildings.gpkg"

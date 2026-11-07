@@ -20,7 +20,7 @@ Raw GIS Data → Ingest & Reproject → DEM Derivatives → Masks → 250m Grid
 1. **Ingest** raw data (DEM, streams, roads, land cover, buildings) into standardized formats
 2. **Prepare** DEM derivatives (slope, aspect, flow accumulation) and build eligibility masks
 3. **Score** each 250m cell on five weighted criteria
-4. **Exclude** cells in protected areas or flood zones
+4. **Exclude** cells in protected areas or flood zones, and cells that are mostly water
 5. **Export** ranked results as CSV, GeoJSON, GeoPackage, and an interactive HTML map
 
 ## Quick Start
@@ -63,9 +63,10 @@ Each cell gets two scores: the weighted **composite** `score` (compensatory — 
 ### Hard Exclusions
 
 Cells are excluded (`score = null`) when:
-- Centroid falls inside a mapped protected area, **or**
-- Excluded-area overlap exceeds 50% of cell area (configurable)
-- Same logic applies for flood zones
+- Centroid falls inside a mapped protected area or flood zone, **or**
+- Protected, flood and water polygons together cover at least 50% of the cell (configurable; area under more than one layer counts once)
+- Water (`data/processed/waterbodies.gpkg`: lakes, rivers and the sea) counts by overlap only, so a pond or lake edge over a mostly-land cell's centroid doesn't exclude it. The layer is optional and skipped if missing.
+- Parcels get cells by centroid containment, except that a mostly-land shore cell whose centroid is in water goes to the parcel holding most of its land, not to a water lot.
 
 Excluded cells are still emitted in output with `status = excluded` and explicit `exclusion_reasons`.
 

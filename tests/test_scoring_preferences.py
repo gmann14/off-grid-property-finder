@@ -156,3 +156,29 @@ def test_classify_parcels_no_buildings():
     assert (result["n_buildings"] == 0).all()
     assert (result["parcel_type"] == "land_only").all()
     assert not result["severance_candidate"].any()
+
+
+def test_aggregate_uses_assignment_points_for_shore_cells(tmp_path):
+    """A shore cell whose centroid is in a water lot goes to the land parcel
+    it is mostly made of once assignment points are passed."""
+    from src.exclusions import apply_exclusions, load_exclusions, parcel_assignment_points
+
+    crs = "EPSG:2961"
+    cells = gpd.GeoDataFrame({"score": [80.0]}, geometry=[box(0, 0, 250, 250)], crs=crs)
+    lake = box(100, -500, 150, 750)  # a 20% strip through the centroid, beyond the cell
+    path = tmp_path / "water.gpkg"
+    gpd.GeoDataFrame(geometry=[lake], crs=crs).to_file(path, driver="GPKG")
+    exclusions = load_exclusions(None, None, crs, (-1000, -1000, 1000, 1000), water_path=path)
+    cells = apply_exclusions(cells, exclusions)
+    assert cells["status"].iloc[0] == "eligible"
+    parcels = gpd.GeoDataFrame(
+        {"PID": ["water_lot", "west_land", "east_land"]},
+        geometry=[lake, box(-500, -500, 100, 750), box(150, -500, 750, 750)],
+        crs=crs,
+    )
+    by_centroid = aggregate_to_parcels(cells, parcels).set_index("PID")
+    assert by_centroid.loc["water_lot", "n_cells"] == 1
+    by_land = aggregate_to_parcels(
+        cells, parcels, assign_points=parcel_assignment_points(cells, exclusions)).set_index("PID")
+    assert by_land.loc["water_lot", "n_cells"] == 0 and pd.isna(by_land.loc["water_lot", "score"])
+    assert by_land.loc[["west_land", "east_land"], "n_cells"].sum() == 1

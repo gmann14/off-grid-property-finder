@@ -272,7 +272,7 @@ Not a data source per se — we derive this from the DEM:
 
 **Fallback if parcel data is blocked:** Generate a fixed `250m × 250m` square candidate grid across the rural study area, score those cells first, and join to parcels later when boundaries become available. This avoids pretending that non-parcel polygons are parcels and keeps runtime predictable. See IMPLEMENTATION-BACKLOG.md task B3 for the decision gate.
 
-**Update (Stage B implemented):** parcel access is **not** blocked — the NSPRD public layer (§5.1) provides PID-keyed boundaries with no account. The grid-first design is retained as the foundation; `score` now joins cell scores to parcels by centroid containment and emits a PID-ranked `output/ranked_parcels.csv`. PVSC (§5.3) AAN remains the cross-validation key for a chosen PID.
+**Update (Stage B implemented):** parcel access is **not** blocked — the NSPRD public layer (§5.1) provides PID-keyed boundaries with no account. The grid-first design is retained as the foundation; `score` now joins cell scores to parcels by centroid containment (a shore cell whose centroid is in water goes to the parcel holding most of its land) and emits a PID-ranked `output/ranked_parcels.csv`. PVSC (§5.3) AAN remains the cross-validation key for a chosen PID.
 
 ---
 
@@ -355,6 +355,7 @@ Not a data source per se — we derive this from the DEM:
 - **Coverage:** Nova Scotia / Canada
 - **Cost:** Free
 - **Notes:** Use polygon water bodies, swamp/wet hydro classes, and related hydro features as conservative masking inputs for solar/buildable-area scoring. Do not treat these layers as a full authoritative wetland-development exclusion dataset unless a dedicated wetland layer is added.
+- **Used for:** the buildability mask, and (since 2026-11-06) as a scoring exclusion: a cell at least 50% covered by water (with protected and flood areas, counted once) is excluded with reason `water`. The processed layer (`waterbodies.gpkg`) includes the sea, so this is what keeps open-water cells out of the ranking.
 
 ---
 

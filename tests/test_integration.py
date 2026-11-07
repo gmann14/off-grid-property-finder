@@ -103,6 +103,13 @@ def test_run_score_end_to_end_default_criteria(
                   box(380600, 4900600, 380620, 4900620)],
         crs=CRS,
     ).to_file(processed / "buildings.gpkg", driver="GPKG")
+    # Water: a lake over the SW cell, and a small pond on the centre of the
+    # cell east of it (which must stay eligible).
+    gpd.GeoDataFrame(
+        geometry=[box(379900, 4899900, 380250, 4900250),
+                  box(380365, 4900115, 380385, 4900135)],
+        crs=CRS,
+    ).to_file(processed / "waterbodies.gpkg", driver="GPKG")
 
     cfg = Config(  # default weights + enabled_criteria
         study_area=StudyArea(bbox=BBOX, name="smoke"),
@@ -119,6 +126,14 @@ def test_run_score_end_to_end_default_criteria(
     for col in ["score", "score_allrounder", "score_hydro", "score_access",
                 "score_open_ground", "score_wind", "score_elevation", "wind_worth_it"]:
         assert col in cells.columns, f"missing {col}"
+
+    # run_score excludes water cells by overlap, not by centroid
+    sc = gpd.read_file(output / "scored_cells.gpkg")
+    cen = sc.geometry.centroid
+    lake_cell = sc[(cen.x == 380125) & (cen.y == 4900125)].iloc[0]
+    pond_cell = sc[(cen.x == 380375) & (cen.y == 4900125)].iloc[0]
+    assert lake_cell["status"] == "excluded" and "water" in lake_cell["exclusion_reasons"]
+    assert pond_cell["status"] == "eligible"
 
     # Stage-B parcel outputs
     assert (output / "scored_parcels.gpkg").exists()

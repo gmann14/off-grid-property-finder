@@ -11,11 +11,19 @@ Branch `wind-hub-30m`, unmerged and unpushed.
 Hydro, access, open ground, elevation, weights and parcel aggregation are
 unchanged. Both runs: 40,000 cells, 1,079 excluded, 8,840 ranked PIDs.
 
+- **+ Water excluded** = "after" plus a separate fix in its own commit: cells
+  that are mostly lake, river or sea no longer count as land, and shore cells
+  are assigned to the parcel holding their land. 18,970 cells excluded, 8,479
+  ranked PIDs. See "Water cells excluded". Where a table has this column,
+  the prose above it describes the July → "after" step.
+
 A first pass earlier the same day used the 10 m + 50 m layers. It is replaced
 (see "Why not the 10 m layer"); its numbers are kept below for reference only.
 
 "Parcel level" means the max over a parcel's eligible cells, assigned by
-centroid containment. This reproduces the July baseline exactly (241 / 122).
+centroid containment, as the scorer does it (with the water fix, a shore cell
+whose centroid is in water goes to the parcel holding most of its land). This
+reproduces the July baseline exactly (241 / 122).
 "Distance to sea" uses connected areas of DEM ≤ 0 m of at least 2 km².
 
 ## Method
@@ -42,13 +50,17 @@ nothing is written. 50 m + 100 m fails on 0 pixels.
 **Coast from inland: yes, clearly. Ridges from valleys: only modestly, about
 one band. Wind ≥65 is now mostly a coastal signal.**
 
-**Parcel-level wind score by distance to sea** (a parcel's nearest cell)
+**Parcel-level wind score by distance to sea** (a parcel's nearest cell;
+water excluded)
 
 | Distance | Parcels | 15 | 40 | 65 | 85 | 100 | ≥65 |
 |---|---:|---:|---:|---:|---:|---:|---:|
-| 0–1 km | 2,213 | 566 | 521 | 392 | 446 | 288 | **51%** |
-| 1–3 km | 1,777 | 1,088 | 549 | 101 | 39 | 0 | **8%** |
-| ≥3 km | 4,850 | 2,567 | 1,465 | 592 | 220 | 6 | **17%** |
+| 0–1 km | 2,062 | 551 | 499 | 377 | 400 | 235 | **49%** |
+| 1–3 km | 1,741 | 1,065 | 541 | 96 | 39 | 0 | **8%** |
+| ≥3 km | 4,676 | 2,474 | 1,420 | 564 | 212 | 6 | **17%** |
+
+With sea cells still scored, the 0–1 km row was 51% ≥65 (2,213 parcels);
+the other rows barely move.
 
 Land cells across the whole study area:
 
@@ -122,26 +134,26 @@ The ordering is monotonic: inland ridges average 0.6 m/s above inland valleys.
 
 ## Headline numbers
 
-**Parcel-level wind score distribution** (8,840 parcels)
+**Parcel-level wind score distribution** (8,840 parcels; 8,479 with water
+excluded)
 
-| Wind score | Before (100 m) | After (30 m, from 50/100 m) | First pass (from 10/50 m, superseded) |
-|---:|---:|---:|---:|
-| 15 | 3 | 4,221 | 6,769 |
-| 40 | 4,794 | 2,535 | 1,214 |
-| 65 | 3,621 | 1,085 | 439 |
-| 85 | 396 | 705 | 336 |
-| 100 | 26 | 294 | 82 |
+| Wind score | Before (100 m) | After (30 m, from 50/100 m) | + Water excluded | First pass (from 10/50 m, superseded) |
+|---:|---:|---:|---:|---:|
+| 15 | 3 | 4,221 | 4,090 | 6,769 |
+| 40 | 4,794 | 2,535 | 2,460 | 1,214 |
+| 65 | 3,621 | 1,085 | 1,037 | 439 |
+| 85 | 396 | 705 | 651 | 336 |
+| 100 | 26 | 294 | 241 | 82 |
 
 The bands are as given in the brief, not retuned. With them, 48% of parcels
-score 15 (under 4 m/s at 30 m) and 24% score ≥65.
+score 15 (under 4 m/s at 30 m) and 24% score ≥65 (23% with water excluded).
 
 **Hydro ≥60 + wind ≥65 + open_ground ≥65 (parcel level)**
 
-| | Before | After | First pass |
-|---|---:|---:|---:|
-| Each criterion's max cleared independently | 241 (122 vacant) | **108 (47 vacant)** | 29 (14 vacant) |
-| … counting land cells only (no shoreline/sea cells) | — | 94 (40 vacant) | — |
-| One cell clears all three | 115 (52 vacant) | 45 (18 vacant) | 6 (2 vacant) |
+| | Before | After | + Water excluded | First pass |
+|---|---:|---:|---:|---:|
+| Each criterion's max cleared independently | 241 (122 vacant) | 108 (47 vacant) | **89 (36 vacant)** | 29 (14 vacant) |
+| One cell clears all three | 115 (52 vacant) | 45 (18 vacant) | 43 (17 vacant) | 6 (2 vacant) |
 
 **Ranking stability**
 
@@ -161,8 +173,12 @@ score 15 (under 4 m/s at 30 m) and 24% score ≥65.
   - Out: 23. All had a cell score of 50.1–55.0 and slipped under the absolute
     `SEVERANCE_MIN_CELL_SCORE = 50` (to 46.4–49.9).
   - In: 4. Three are on the coast; one is on windy high ground 12 km inland.
+- **July → with water excluded** (both changes together): top 50 keeps 46 of
+  50, top 50 vacant 45, top 200 181. Spearman 0.988 over the 8,433 parcels
+  ranked in both; median parcel −2.44. Tiers 75 / 410 / 1,430 → 45 / 282 /
+  1,103; severance 86 → 61.
 
-**Biggest moves among parcels in the old or new top 200**
+**Biggest moves among parcels in the old or new top 200** (July → "after")
 
 | PID | Rank before → after | Type | Where (lat, lon) | Wind on its top-3 cells, before → after |
 |---|---|---|---|---|
@@ -174,7 +190,8 @@ score 15 (under 4 m/s at 30 m) and 24% score ≥65.
 | 60529575 | 134 → 193 | land_only, 68 ac | 44.325, −64.620 | 65,65,65 → 15,15,15 |
 | 60349677 | 127 → 184 | developed, 201 ac | 44.290, −64.546 | 65,65,65 → 15,15,15 |
 
-\* See "Shoreline and sea cells inside parcels" below.
+\* Its 42 cells are all mostly sea; with water excluded it is unscored. See
+"Water cells excluded" below.
 
 Two parcels rose 69–80 places with no score change at all
 (`60664828`, `60671989`): wind there was already 40 and the parcels around
@@ -242,32 +259,138 @@ Kept at **wind ≥65 and open_ground ≤40**, which now reads "≥4.5 m/s at the
 hub and <10% of the cell open/buildable". 4.5 m/s clears the ~4 m/s
 small-turbine floor with margin, and open-ground scoring didn't change.
 
-| Parcel cells flagged | Before | After |
-|---|---|---|
-| All eligible cells in parcels | 16,052 cells, 2,455 parcels (1,893 vacant) | 12,535 cells, 1,072 parcels (783 vacant) |
-| Land cells only | 5,980 cells, 2,402 parcels (1,859 vacant) | **2,394 cells, 1,021 parcels (750 vacant)** |
+| Parcel cells flagged | Before | After | + Water excluded |
+|---|---|---|---|
+| All eligible cells in parcels | 16,052 cells, 2,455 parcels (1,893 vacant) | 12,535 cells, 1,072 parcels (783 vacant) | **1,635 cells, 959 parcels (688 vacant)** |
+| Land cells only (DEM > 0) | 5,980 cells, 2,402 parcels (1,859 vacant) | 2,394 cells, 1,021 parcels (750 vacant) | — |
 
-Sensitivity, all parcel cells: ≥4.0 m/s (wind ≥40) gives 2,655 parcels;
-≥5.0 m/s (wind ≥85) gives 477.
+Most "after" flags were on water: 16,388 of the 18,023 flagged cells are now
+excluded as mostly water, leaving 1,635. The DEM > 0 row overstates land
+because lakes sit above sea level. Sensitivity, all parcel cells "after":
+≥4.0 m/s (wind ≥40) gives 2,655 parcels; ≥5.0 m/s (wind ≥85) gives 477.
 
-## Shoreline and sea cells inside parcels (pre-existing)
+## Water cells excluded (separate commit)
 
-The candidate grid scores cells over open water as "eligible." About 16,000
-of the 40,000 cells are mostly DEM ≤ 0 m.
+**Bug.** `apply_exclusions` used only protected areas and flood zones, so
+cells over lakes, rivers and the sea were scored as land. The 17,891 cells
+this fix excludes averaged wind 92 against 30 on the cells left (overall
+score 18). They carried 16,388 of the 18,023 `wind_worth_it` flags, and were
+among the top-3 cells of parcels such as `60573417` and `60543055`.
+`waterbodies.gpkg`, already used by the buildability mask, covers all three
+kinds of water, the sea included: 3,938 features, 1,968 km² of the 2,500 km²
+study box. DEM ≤ 0 m adds only ~140 cells beyond it.
 
-- **In parcels:** 80 parcels' boundaries take in ~10,500 such cells
-  (shoreline lots, water lots, big coastal holdings).
-- **Scores:** these cells average 17 overall (hydro, access and open ground
-  are near 0), but now score wind ~96, up from ~84 at 100 m.
-- **Top-3 effect:** in 79 of the 80 parcels one of them is among the
-  parcel's top-3 cells. That includes 6 of the top 200 (5 before):
-  `60573417`, `60543055`, `60543097`, `60544590`, `60535564`, `60543014`.
-- **Worth-it flags:** they are 10,141 of the 12,535 flagged parcel cells
-  above.
+**Rule.**
 
-The count of affected parcels hasn't changed, but the wind change raises
-their score. This is filed in `tasks.md`. Until it's fixed, check the map
-before trusting a coastal parcel's rank.
+- A cell is excluded when protected, flood and water polygons together cover
+  at least 50% of it. Area under more than one layer counts once.
+  - Before, the overlap was summed per polygon, so sea that is also a mapped
+    flood zone counted twice. On this data that alone pushed 103 cells over
+    50%.
+  - The change readmits no cell that was excluded before.
+- Water counts by overlap only. Protected areas and flood zones still also
+  exclude a cell whose centroid falls in them; water doesn't.
+- A shore cell whose centroid is in water but which is mostly land goes to
+  the parcel holding the largest share of its land.
+- The 3 invalid (self-intersecting) water polygons are repaired on load.
+- A missing `waterbodies.gpkg` is skipped, like the other layers.
+
+**Why not the centroid rule for water too.** The review asked for the
+existing centroid-or-overlap rule.
+
+- That rule also drops 728 cells whose centre is in water but which are under
+  half water (median 34%). 605 of them are otherwise eligible.
+- 99 of those 605 score hydro ≥ 60: lake outlets and stream mouths, the kind
+  of site the hydro criterion is for.
+- Dropping them takes those streams away from the land parcels around them:
+  8,399 ranked parcels instead of 8,479.
+
+**Why the assignment change.** Keeping those cells exposed a second bug.
+
+- Cells go to parcels by centroid, so a shore cell centred just offshore went
+  to whatever parcel holds that water.
+- 200 of the 605 went to parcels that are at least half water (water lots),
+  38 of them with hydro ≥ 60.
+- With the sea cells gone, such a parcel's top-3 mean is set by that one land
+  cell, while its acreage still counts the water:
+  - `60573417` (17,306 acres, 99.9% water) went from rank 46 to 2;
+  - `60560349` (96% water) went from rank 1,272 to 31.
+- Placing the point on the cell's land alone isn't enough: it can fall in a
+  neighbour holding a minority of that land, which wrongly dropped some
+  small parcels. Hence "largest share of its land".
+
+**Effect** ("after" → + water excluded; July → both is under "Ranking
+stability")
+
+| | After | + Water excluded |
+|---|---:|---:|
+| Excluded cells | 1,079 | 18,970 |
+| Eligible cells, mean wind score | 38,921, 58.6 | 21,030, 30.0 |
+| Ranked PIDs | 8,840 | **8,479** |
+| Tiers ≥80 / ≥70 / ≥60 | 46 / 292 / 1,149 | 45 / 282 / 1,103 |
+| Severance candidates | 67 | 61 |
+| Median parcel score | 44.82 | 45.06 |
+
+- **Ranked list:**
+  - 407 parcels drop out because every cell they had is mostly water: 332
+    vacant, 52 lightly built, 23 developed. 11 were in the top 200.
+  - 46 parcels are newly ranked because a shore cell's land is mostly
+    theirs.
+- **Top 50: 47 of 50 stay.**
+  - Out: `60555083` (10 → 464: 40 cells → 3, 92% water); `70202817` (30 →
+    unscored, a river lot, see below); `60573417` (46 → unscored).
+  - In: `60453073` (2,098 → 35), which now gets two shore cells (hydro 100,
+    open ground 75) whose land is mostly in it; `60329687` (375 → 44);
+    `60303575` (tied 50th → 49th).
+- **Top 50 vacant:** 47 of 50 stay. **Top 200:** 184 of 200 stay.
+- **Scores:** Spearman 0.998 over parcels ranked in both. 252 parcels change
+  score: 119 fall, 133 rise.
+  - Largest fall: `60567559`, 95 → 3,875. It is 809 acres and 98% water, and
+    54 cells drop to 1.
+  - Largest rise: `60453073`, +26.5.
+- **Severance:** 6 candidates drop out, none come in.
+
+**Hydro: did parcels keep their streams?** Mostly yes.
+
+- 110 newly excluded cells scored hydro ≥ 60. Hydro rates any stream within
+  `STREAM_BUFFER_M` of a cell, so for 95 of them a neighbouring eligible
+  cell scores ≥ 60 too, and only 1 has no eligible neighbour at all.
+- 87 ranked parcels' best hydro drops below 60. 61 lost it to an excluded
+  water cell and 26 to the reassignment.
+- **Lost to an excluded cell (61):** 50 of these parcels are at least half
+  water. 11 are mostly land, and a stream crosses the land of 6 of those:
+  - `60296423` (27.5 acres, 22 of them land): now unscored. Both its cells
+    are mostly water (52% and 71%), and the 52% one scored hydro 80. This is
+    the clearest real loss.
+  - `60428505` (9 acres) and `60358926` (4 acres): also now unscored.
+  - `60307956`, `60220803`, `60342433` stay ranked, but their best hydro
+    drops to 0. Each has 150–215 m of stream on its land; the hydro ≥ 60
+    cells along those streams belong to neighbouring parcels.
+- **The biggest drop is intended:** `70202817` went from rank 30 to unscored.
+  It is a 238-acre river and estuary lot, 90% water, with its land in strips
+  along the banks.
+  - 6 of its 13 cells are now excluded: mostly water, or 41% water plus 41%
+    protected area.
+  - The other 7 still count, but for the neighbouring land parcels that hold
+    most of their land.
+- **Lost to the reassignment (26):** 19 are water lots. The other 7 are small
+  mostly-land parcels (7–24 acres) whose shore cell's land lies mostly in a
+  neighbour's parcel.
+
+**Not fixed here**
+
+- **Acreage still counts water.** The size score (35% of a parcel's score)
+  uses the deeded area, so water lots and lakefront lots that take in lake
+  area score as big parcels. 198 ranked parcels are at least 25% water, and
+  34 are at least half. In the top 50: `60559630` (#7, 25 acres, 60% water)
+  and `60554987` (#45, 85 acres, 85% water), each on one land cell of its
+  own. Scoring land acres instead would also change the 40-acre severance
+  rule, so it is filed in `tasks.md` for a decision.
+- **Grid resolution.** A parcel whose land lies entirely in mostly-water
+  cells gets no cell and drops out (`60296423` above).
+- **`real-estate-eval`:** its atlas registry imported the 8,840 July scores
+  in September. The smaller list only matters if someone reimports: 407 of
+  those PIDs would then have no score, and 46 new ones would.
 
 ## Stress test
 
@@ -329,6 +452,9 @@ The suite is 290 tests, all passing, all network-free.
    - 8,840 unique PIDs. No inf anywhere.
    - NaN only where July had it too: the 1,079 excluded cells and the 31,357
      unscored parcels.
+   - With water excluded: same schema, 8,479 unique PIDs, no inf, NaN only
+     on the 18,970 excluded cells and 31,718 unscored parcels. Two more full
+     runs were byte-identical (GeoPackages content-identical).
    - Band edges at exactly 4.0/4.5/5.0/6.0 and just below are unit-tested.
 
 **Bugs found and fixed**
@@ -370,6 +496,9 @@ The suite is 290 tests, all passing, all network-free.
 - **`map.html`** regenerated cleanly but wasn't inspected visually.
 - **The alignment fix's effect on rankings** isn't separated from the
   hub-height change.
+- **The water layer wasn't checked against imagery.** Tidal flats, salt
+  marsh and river polygons are taken as mapped; a cell's water fraction is
+  only as good as `waterbodies.gpkg`.
 
 ## Restoring the July state
 

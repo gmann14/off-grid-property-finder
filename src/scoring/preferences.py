@@ -52,13 +52,16 @@ def aggregate_to_parcels(
     parcels: gpd.GeoDataFrame,
     top_n: int = PARCEL_TOP_N_CELLS,
     cell_weight: float = PARCEL_CELL_WEIGHT,
+    assign_points: gpd.GeoSeries | None = None,
 ) -> gpd.GeoDataFrame:
     """Aggregate cell scores to parcels (Stage B).
 
     Each parcel's score = cell_weight * mean(top N eligible cell scores)
                         + (1 - cell_weight) * parcel_size_score
 
-    Cells are assigned to parcels by centroid containment. Identifier columns
+    Cells are assigned to parcels by centroid containment, or by
+    ``assign_points`` (indexed like ``candidates``; see
+    ``src.exclusions.parcel_assignment_points``) where given. Identifier columns
     (``PID``, ``AAN``) pass through untouched so the ranked output is keyed by
     real property identifiers. Adds ``n_cells``, ``rank`` (over scored parcels),
     and a ``flags`` column marking parcels with no assigned candidates.
@@ -72,9 +75,14 @@ def aggregate_to_parcels(
     if "status" in candidates.columns:
         eligible = candidates[candidates["status"] != "excluded"]
 
+    points = eligible.geometry.centroid
+    if assign_points is not None:
+        given = assign_points.reindex(eligible.index)
+        has_point = given.notna() & ~given.is_empty
+        points.loc[has_point] = given[has_point]
     centroid_gdf = gpd.GeoDataFrame(
         {"score": eligible["score"].values},
-        geometry=eligible.geometry.centroid.values,
+        geometry=points.values,
         crs=candidates.crs,
     )
     joined = gpd.sjoin(
