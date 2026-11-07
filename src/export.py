@@ -19,8 +19,8 @@ CSV_COLUMNS = [
 # Columns (in order) for the ranked-parcel CSV — the PID candidate list
 PARCEL_CSV_COLUMNS = [
     "PID", "AAN", "rank", "score", "cell_score", "size_score",
-    "n_cells", "area_acres", "parcel_type", "n_buildings", "severance_candidate",
-    "flags",
+    "n_cells", "area_acres", "land_acres", "water_share", "parcel_type", "n_buildings",
+    "severance_candidate", "flags",
 ]
 
 

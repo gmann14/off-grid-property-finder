@@ -16,6 +16,10 @@ unchanged. Both runs: 40,000 cells, 1,079 excluded, 8,840 ranked PIDs.
   are assigned to the parcel holding their land. 18,970 cells excluded, 8,479
   ranked PIDs. See "Water cells excluded". Where a table has this column,
   the prose above it describes the July → "after" step.
+- **+ Land acres** = a third commit: the parcel size score and the 40-acre
+  severance rule use the parcel's land acres, not its whole mapped area. It
+  changes no cell score, so the wind and all-three tables are unchanged by
+  it. See "Land acres".
 
 A first pass earlier the same day used the 10 m + 50 m layers. It is replaced
 (see "Why not the 10 m layer"); its numbers are kept below for reference only.
@@ -177,6 +181,10 @@ score 15 (under 4 m/s at 30 m) and 24% score ≥65 (23% with water excluded).
   50, top 50 vacant 45, top 200 181. Spearman 0.988 over the 8,433 parcels
   ranked in both; median parcel −2.44. Tiers 75 / 410 / 1,430 → 45 / 282 /
   1,103; severance 86 → 61.
+- **July → with land acres too** (all three commits): top 50 keeps 44 of 50,
+  top 50 vacant 43, top 200 174. Spearman 0.983 over the same 8,433 parcels;
+  median parcel −2.44. Tiers 75 / 410 / 1,430 → 43 / 273 / 1,078;
+  severance 86 → 58.
 
 **Biggest moves among parcels in the old or new top 200** (July → "after")
 
@@ -379,18 +387,102 @@ stability")
 
 **Not fixed here**
 
-- **Acreage still counts water.** The size score (35% of a parcel's score)
-  uses the deeded area, so water lots and lakefront lots that take in lake
-  area score as big parcels. 198 ranked parcels are at least 25% water, and
-  34 are at least half. In the top 50: `60559630` (#7, 25 acres, 60% water)
-  and `60554987` (#45, 85 acres, 85% water), each on one land cell of its
-  own. Scoring land acres instead would also change the 40-acre severance
-  rule, so it is filed in `tasks.md` for a decision.
+- **Acreage still counted water** in this commit: the size score used the
+  whole mapped area, so water lots and lakefront lots that take in lake area
+  scored as big parcels. 198 ranked parcels are at least 25% water, and 34
+  are at least half. In the top 50: `60559630` (#7, 25 acres, 60% water) and
+  `60554987` (#45, 85 acres, 85% water), each on one land cell of its own.
+  Fixed in the next commit; see "Land acres".
 - **Grid resolution.** A parcel whose land lies entirely in mostly-water
   cells gets no cell and drops out (`60296423` above).
 - **`real-estate-eval`:** its atlas registry imported the 8,840 July scores
   in September. The smaller list only matters if someone reimports: 407 of
   those PIDs would then have no score, and 46 new ones would.
+
+## Land acres (separate commit)
+
+**Change.** The size score (35% of a parcel's score) and the 40-acre
+severance rule use `land_acres` instead of `area_acres`.
+
+- `land_acres` = `area_acres` × (1 − `water_share`), where `water_share` is
+  the share of the parcel under `waterbodies.gpkg` (lakes, rivers, the sea).
+  Water under several polygons counts once, as in the cell exclusion.
+- `area_acres` still means the whole mapped area in every output.
+  `land_acres` and `water_share` are new columns next to it in
+  `ranked_parcels.csv`, `scored_parcels.gpkg` / `.geojson`, the map popup
+  and the `results/` CSVs.
+- Invalid parcel or water polygons are repaired first (`make_valid`, polygon
+  part only).
+- Without `waterbodies.gpkg`, `land_acres` = `area_acres`, `water_share` is
+  left empty and `score` logs a warning that no water was subtracted.
+- Speed: ~10 s for all 40,197 parcels (a spatial index, then one
+  intersection per parcel–water pair). 11,888 parcels touch water.
+- Nothing else decides on acreage. `top_land_only.csv` picks by parcel type,
+  and `min_parcel_area_acres` in the config is read but used nowhere.
+
+**Effect** (+ water excluded → + land acres)
+
+| | + Water excluded | + Land acres |
+|---|---:|---:|
+| Ranked PIDs | 8,479 | 8,479 |
+| Tiers ≥80 / ≥70 / ≥60 | 45 / 282 / 1,103 | 43 / 273 / 1,078 |
+| Severance candidates | 61 | 58 |
+| Median parcel score | 45.06 | 44.75 |
+
+**Size-score bands** (ranked parcels)
+
+| Band (acres) | Score | + Water excluded | + Land acres |
+|---|---:|---:|---:|
+| 100+ | 100 | 565 | 518 |
+| 50–100 | 92 | 918 | 898 |
+| 20–50 | 80 | 2,172 | 2,155 |
+| 10–20 | 60 | 1,658 | 1,676 |
+| 5–10 | 40 | 1,273 | 1,293 |
+| 2–5 | 20 | 1,013 | 1,043 |
+| 1–2 | 5 | 491 | 502 |
+| under 1 | 0 | 389 | 394 |
+
+- Only the size score moves. Cell scores and cell counts are identical for
+  every parcel, so the wind distribution, the all-three tier and
+  `wind_worth_it` are unchanged. 299 parcels fall a band or more; none rise.
+- **Top 50: 47 of 50 stay.**
+  - Out: `60559630` (#7 → 230; 25 acres, 10 of them land); `60554987`
+    (#45 → 316; 85 acres, 13 land); `60217551` (#48 → 88; 117 acres, 99
+    land, just under the 100-acre band).
+  - In, with unchanged scores: `70167408` (49 → 46), `60182219` (52 → 49),
+    `60591377` (53 → 50).
+  - No parcel left in the top 50 is even a quarter water.
+- **Top 50 vacant:** 48 of 50 stay. **Top 200:** 191 of 200 stay. Spearman
+  0.995.
+- **The 34 parcels at least half water:**
+  - 33 drop a band or more. The other, `70175328`, stays in the 20–50 band
+    (43 acres, 20 land).
+  - None is left in the top 200; there were 4. The median one falls 1,509
+    places.
+  - Largest fall: `60540036`, a 215-acre water lot with 0.1 acre of land,
+    from score 49 to 14 (rank 3,293 → 8,462).
+- **Severance 61 → 58, none in.** Out:
+  - `60554987` (85 acres, 12.6 of them land);
+  - `60225109` (46.8 acres, 36.2 land, 23% water);
+  - `60410784` (40.9 acres, 38.1 land, 7% water).
+- **Mostly-land parcels** (under half water, 8,445):
+  - 8,179 keep their score and move only because others fall: median 45
+    places, at most 64 up, and at most 9 within the old top 200.
+  - 266 drop a band because their land falls under a band edge (10, 20, 50
+    or 100 acres). Their moves are large (median ~1,000 places): one band
+    step costs 1.75–7 points, and scores are dense. 189 of them are at least 10%
+    water; the median one loses 3.4 acres.
+  - 9 of the 266 are under 2% water, where the parcel and water layers'
+    shorelines don't quite match. Example: `60471778` goes from 50.05 to
+    49.95 acres, rank 782 → 1,258. None of the 9 is in the top 200.
+  - In the old top 200, 7 mostly-land parcels drop a band. The largest
+    moves: `60245826` (193 → 554, 11.7 → 9.8 acres), `60308996` (140 → 409,
+    20.5 → 14.0), `60290228` (127 → 378, 5.6 → 3.6) and `60303062` (#5 →
+    26, 52.8 → 48.2).
+
+**Not done:** the bands are hard steps, so a sliver of mapped water can move
+a parcel a band. No sliver tolerance is applied, which affects the 9 parcels
+above.
 
 ## Stress test
 
@@ -455,6 +547,11 @@ The suite is 290 tests, all passing, all network-free.
    - With water excluded: same schema, 8,479 unique PIDs, no inf, NaN only
      on the 18,970 excluded cells and 31,718 unscored parcels. Two more full
      runs were byte-identical (GeoPackages content-identical).
+   - With land acres: the parcel outputs gain `land_acres` and
+     `water_share`; nothing else in the schema changes, and `area_acres` is
+     identical for every PID. No NaN or inf in either new column. Two more
+     full runs gave identical hashes of every file `score` writes
+     (GeoPackages by content). The suite is 308 tests.
    - Band edges at exactly 4.0/4.5/5.0/6.0 and just below are unit-tested.
 
 **Bugs found and fixed**

@@ -6,7 +6,9 @@ from pathlib import Path
 import geopandas as gpd
 
 from src.config import Config
-from src.exclusions import apply_exclusions, load_exclusions, parcel_assignment_points
+from src.exclusions import (
+    apply_exclusions, load_exclusions, parcel_assignment_points, parcel_land_acres,
+)
 from src.export import export_ranked_parcels, export_results
 
 # Import scorers to trigger registration
@@ -101,6 +103,9 @@ def run_score(config: Config, logger: logging.Logger, limit: int | None = None) 
     if parcels_path.exists():
         logger.info("=== Step 5: Parcel aggregation (PID) ===")
         parcels = gpd.read_file(parcels_path)
+        # the size score and the severance rule count land, not the lake or
+        # sea a water lot or lakefront lot takes in
+        parcels[["land_acres", "water_share"]] = parcel_land_acres(parcels, exclusions)
         agg = config.preferences.get("parcel_aggregation", {})
         parcels = aggregate_to_parcels(
             candidates,

@@ -20,6 +20,7 @@ from src.constants import (
     SEVERANCE_MAX_BUILDINGS,
     SEVERANCE_MIN_ACRES,
     SEVERANCE_MIN_CELL_SCORE,
+    SQ_M_PER_ACRE,
 )
 
 logger = logging.getLogger("property_finder")
@@ -32,16 +33,21 @@ def _lookup_score(value: float, thresholds: list[tuple]) -> int:
     return 0
 
 
-def score_parcel_size(parcels: gpd.GeoDataFrame) -> pd.Series:
-    """Score parcels by area in acres."""
-    if "area_acres" not in parcels.columns:
-        # Calculate area in acres from geometry (assumes projected CRS in meters)
-        area_m2 = parcels.geometry.area
-        parcels = parcels.copy()
-        parcels["area_acres"] = area_m2 / 4046.86
+def _scoring_acres(parcels: gpd.GeoDataFrame) -> pd.Series:
+    """The acreage the size score and severance rule use: ``land_acres`` (the
+    parcel less any water in it; see src.exclusions.parcel_land_acres) where
+    present, else ``area_acres``, else the mapped area (projected CRS in m)."""
+    if "land_acres" in parcels.columns:
+        return parcels["land_acres"].astype(float)
+    if "area_acres" in parcels.columns:
+        return parcels["area_acres"].astype(float)
+    return parcels.geometry.area / SQ_M_PER_ACRE
 
+
+def score_parcel_size(parcels: gpd.GeoDataFrame) -> pd.Series:
+    """Score parcels by land acres (see ``_scoring_acres``)."""
     return pd.Series(
-        [_lookup_score(a, PARCEL_SIZE_THRESHOLDS) for a in parcels["area_acres"]],
+        [_lookup_score(a, PARCEL_SIZE_THRESHOLDS) for a in _scoring_acres(parcels)],
         index=parcels.index,
         dtype=float,
     )
@@ -58,6 +64,9 @@ def aggregate_to_parcels(
 
     Each parcel's score = cell_weight * mean(top N eligible cell scores)
                         + (1 - cell_weight) * parcel_size_score
+
+    The size score uses ``land_acres`` when the parcels carry it (see
+    ``src.exclusions.parcel_land_acres``), else ``area_acres``.
 
     Cells are assigned to parcels by centroid containment, or by
     ``assign_points`` (indexed like ``candidates``; see
@@ -132,8 +141,9 @@ def classify_parcels(
 
     Adds ``n_buildings``, ``parcel_type``, and a ``severance_candidate`` boolean
     for big, already-developed parcels whose resource-bearing land could plausibly
-    be split off — the basis for the owner-outreach workflow. Requires
-    ``cell_score`` and ``area_acres`` (from aggregate_to_parcels); both optional.
+    be split off — the basis for the owner-outreach workflow. Uses
+    ``cell_score`` (from aggregate_to_parcels) and ``land_acres`` (falling back
+    to ``area_acres``); all optional.
     """
     parcels = parcels.reset_index(drop=True).copy()
 
@@ -157,7 +167,10 @@ def classify_parcels(
 
     parcels["parcel_type"] = parcels["n_buildings"].map(_type)
 
-    acres = parcels["area_acres"] if "area_acres" in parcels.columns else pd.Series(0.0, index=parcels.index)
+    # Land acres, not the deeded area: lake or sea in the lot can't be split off.
+    acres = (_scoring_acres(parcels)
+             if {"land_acres", "area_acres"} & set(parcels.columns)
+             else pd.Series(0.0, index=parcels.index))
     cell_score = parcels["cell_score"] if "cell_score" in parcels.columns else pd.Series(0.0, index=parcels.index)
     parcels["severance_candidate"] = (
         (parcels["n_buildings"] >= 1)

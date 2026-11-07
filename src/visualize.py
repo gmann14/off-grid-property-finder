@@ -429,7 +429,7 @@ def _add_parcels(m, parcels_path: Path):
     parcels.geometry = parcels.geometry.simplify(tolerance=0.00002)
 
     keep = [c for c in ["geometry", "PID", "AAN", "score", "rank",
-                        "cell_score", "n_cells", "area_acres",
+                        "cell_score", "n_cells", "area_acres", "land_acres",
                         "parcel_type", "n_buildings", "severance_candidate"]
             if c in parcels.columns]
     parcels = parcels[keep]
@@ -448,10 +448,11 @@ def _add_parcels(m, parcels_path: Path):
         }
 
     fields = [c for c in ["PID", "score", "rank", "cell_score", "n_cells",
-                          "area_acres", "parcel_type", "n_buildings"]
+                          "area_acres", "land_acres", "parcel_type", "n_buildings"]
               if c in parcels.columns]
     aliases = {"PID": "PID", "score": "Parcel score", "rank": "Rank",
                "cell_score": "Cell score", "n_cells": "Cells", "area_acres": "Acres",
+               "land_acres": "Land acres",
                "parcel_type": "Type", "n_buildings": "Buildings"}
 
     folium.GeoJson(

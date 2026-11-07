@@ -139,8 +139,20 @@ def test_run_score_end_to_end_default_criteria(
     assert (output / "scored_parcels.gpkg").exists()
     assert (output / "ranked_parcels.csv").exists()
     parcels = gpd.read_file(output / "scored_parcels.gpkg")
-    for col in ["PID", "parcel_type", "n_buildings", "severance_candidate", "rank"]:
+    for col in ["PID", "parcel_type", "n_buildings", "severance_candidate", "rank", "land_acres"]:
         assert col in parcels.columns, f"missing parcel col {col}"
+    # The SW parcel holds the lake's 250 x 250 m corner and the 20 x 20 m pond;
+    # its land acres (which the size score uses) leave both out.
+    by_pid = parcels.set_index("PID")
+    assert by_pid.loc["60010001", "land_acres"] == pytest.approx((250_000 - 62_500 - 400) / 4046.86)
+    assert by_pid.loc["60010001", "water_share"] == pytest.approx((62_500 + 400) / 250_000)
+    assert by_pid.loc["60010004", "land_acres"] == pytest.approx(250_000 / 4046.86)
+    assert by_pid.loc["60010004", "water_share"] == 0
+    # 61.8 mapped acres would be the 50-100 band (92); 46.2 land acres is 20-50 (80)
+    assert by_pid.loc["60010001", "size_score"] == 80
+    assert by_pid.loc["60010004", "size_score"] == 92
+    ranked = pd.read_csv(output / "ranked_parcels.csv")
+    assert {"land_acres", "water_share"} <= set(ranked.columns)
 
 
 def test_grid_exclusion_count(small_grid, sample_exclusion_zones):

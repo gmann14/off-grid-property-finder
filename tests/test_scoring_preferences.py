@@ -150,6 +150,29 @@ def test_classify_parcels_severance_candidate():
     assert "severance_candidate" in a["flags"]
 
 
+def test_score_parcel_size_uses_land_acres():
+    """A 60-acre lot that is mostly lake scores on its 15 acres of land."""
+    parcels = gpd.GeoDataFrame(
+        {"area_acres": [60.0, 60.0], "land_acres": [15.0, 60.0]},
+        geometry=[box(0, 0, 1, 1), box(1, 0, 2, 1)], crs="EPSG:2961",
+    )
+    scores = score_parcel_size(parcels)
+    assert scores.iloc[0] == 60  # 15 acres
+    assert scores.iloc[1] == 92  # 60 acres
+
+
+def test_classify_parcels_severance_needs_40_land_acres():
+    """A 61.8-acre lot with only 30 acres of land isn't a severance candidate."""
+    parcels = _parcels_with_metrics()
+    parcels["land_acres"] = [30.0, 61.8, 61.8]
+    buildings = gpd.GeoDataFrame(
+        geometry=[box(50, 50, 60, 60), box(550, 50, 560, 60)], crs="EPSG:2961"
+    )  # 1 building in A and 1 in B
+    result = classify_parcels(parcels, buildings).set_index("PID")
+    assert not result.loc["60010001", "severance_candidate"]
+    assert result.loc["60010002", "severance_candidate"]
+
+
 def test_classify_parcels_no_buildings():
     parcels = _parcels_with_metrics()
     result = classify_parcels(parcels, None)

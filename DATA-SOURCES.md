@@ -355,7 +355,7 @@ Not a data source per se — we derive this from the DEM:
 - **Coverage:** Nova Scotia / Canada
 - **Cost:** Free
 - **Notes:** Use polygon water bodies, swamp/wet hydro classes, and related hydro features as conservative masking inputs for solar/buildable-area scoring. Do not treat these layers as a full authoritative wetland-development exclusion dataset unless a dedicated wetland layer is added.
-- **Used for:** the buildability mask, and (since 2026-11-06) as a scoring exclusion: a cell at least 50% covered by water (with protected and flood areas, counted once) is excluded with reason `water`. The processed layer (`waterbodies.gpkg`) includes the sea, so this is what keeps open-water cells out of the ranking.
+- **Used for:** the buildability mask, and (since 2026-11-06) as a scoring exclusion: a cell at least 50% covered by water (with protected and flood areas, counted once) is excluded with reason `water`. The processed layer (`waterbodies.gpkg`) includes the sea, so this is what keeps open-water cells out of the ranking. It also gives each parcel its `land_acres` (acreage less the water inside it), which the parcel size score and the 40-acre severance rule use.
 
 ---
 

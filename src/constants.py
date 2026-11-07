@@ -54,6 +54,10 @@ BUILDABLE_PERCENT_THRESHOLDS = [
     (0, 5, 0),
 ]
 
+SQ_M_PER_ACRE = 4046.86
+
+# Scored on land acres (the parcel's acreage less any lake, river or sea in it),
+# not the deeded area: see src.exclusions.parcel_land_acres.
 PARCEL_SIZE_THRESHOLDS = [
     (100, float("inf"), 100),    # 100+ acres — room for everything + severance
     (50, 100, 92),

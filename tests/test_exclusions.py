@@ -4,7 +4,9 @@ import geopandas as gpd
 import pytest
 from shapely.geometry import Polygon, box
 
-from src.exclusions import apply_exclusions, load_exclusions, parcel_assignment_points
+from src.exclusions import (
+    apply_exclusions, load_exclusions, parcel_assignment_points, parcel_land_acres,
+)
 
 CRS = "EPSG:2961"
 BBOX = (380000.0, 4900000.0, 381000.0, 4901000.0)
@@ -246,3 +248,79 @@ def test_shore_cell_goes_to_the_parcel_with_most_of_its_land(tmp_path):
     parcels2 = gpd.GeoDataFrame({"PID": ["west", "east"]}, geometry=[west2, east2], crs=CRS)
     pt2 = parcel_assignment_points(grid, exclusions, parcels2).iloc[0]
     assert west2.contains(pt2) and not lobe.contains(pt2)
+
+
+
+def _water(geoms, reason="water"):
+    return gpd.GeoDataFrame({"exclusion_reason": [reason] * len(geoms)}, geometry=geoms, crs=CRS)
+
+
+def test_land_acres_drop_the_water_in_a_parcel():
+    """A lot half under a lake has half its acreage as land; a dry lot keeps it all."""
+    parcels = gpd.GeoDataFrame(
+        {"PID": ["lakefront", "dry"], "area_acres": [25.0, 10.0]},
+        geometry=[box(0, 0, 1000, 100), box(2000, 0, 2100, 100)], crs=CRS,
+    )
+    lake = box(500, -50, 1200, 150)  # covers x 500-1000 of the lakefront lot
+    result = parcel_land_acres(parcels, _water([lake]))
+    assert list(result.columns) == ["land_acres", "water_share"]
+    assert result["land_acres"].tolist() == pytest.approx([12.5, 10.0])
+    assert result["water_share"].tolist() == pytest.approx([0.5, 0.0])
+
+
+def test_land_acres_count_overlapping_water_once():
+    """A river mapped over a lake must not take the same area out twice."""
+    parcels = gpd.GeoDataFrame({"area_acres": [10.0]}, geometry=[box(0, 0, 100, 100)], crs=CRS)
+    lake = box(0, 0, 50, 100)
+    river = box(25, 0, 75, 100)  # half of it over the lake
+    result = parcel_land_acres(parcels, _water([lake, river])).iloc[0]
+    assert result["land_acres"] == pytest.approx(10.0 * 0.25)
+    assert result["water_share"] == pytest.approx(0.75)
+
+
+def test_land_acres_only_water_comes_off():
+    """Flood zones and protected land are still land."""
+    parcels = gpd.GeoDataFrame({"area_acres": [10.0]}, geometry=[box(0, 0, 100, 100)], crs=CRS)
+    result = parcel_land_acres(parcels, _water([box(0, 0, 100, 100)], reason="flood_zone"))
+    assert result["land_acres"].iloc[0] == pytest.approx(10.0)
+
+
+def test_land_acres_without_a_water_layer_keep_acreage_and_say_so(caplog):
+    """No water layer: acreage unchanged, water share unknown, and a warning."""
+    parcels = gpd.GeoDataFrame({"area_acres": [10.0]}, geometry=[box(0, 0, 100, 100)], crs=CRS)
+    empty = gpd.GeoDataFrame(columns=["geometry", "exclusion_reason"], crs=CRS)
+    for exclusions in (None, empty):
+        caplog.clear()
+        with caplog.at_level("WARNING", logger="property_finder"):
+            result = parcel_land_acres(parcels, exclusions)
+        assert result["land_acres"].iloc[0] == pytest.approx(10.0)
+        assert result["water_share"].isna().all()
+        assert "no water subtracted" in caplog.text
+
+
+def test_land_acres_without_area_column_use_mapped_area():
+    parcels = gpd.GeoDataFrame(geometry=[box(0, 0, 4046.86, 2)], crs=CRS)  # 2 acres
+    land = parcel_land_acres(parcels, _water([box(0, 0, 4046.86, 1)]))["land_acres"]
+    assert land.iloc[0] == pytest.approx(1.0)
+
+
+def test_land_acres_a_water_lot_has_none_and_scores_the_bottom_size_band():
+    from src.scoring.preferences import score_parcel_size
+
+    parcels = gpd.GeoDataFrame({"area_acres": [500.0]}, geometry=[box(0, 0, 100, 100)], crs=CRS)
+    parcels[["land_acres", "water_share"]] = parcel_land_acres(
+        parcels, _water([box(-10, -10, 110, 110)]))
+    assert parcels["land_acres"].iloc[0] == pytest.approx(0.0)
+    assert parcels["water_share"].iloc[0] == pytest.approx(1.0)
+    assert score_parcel_size(parcels).iloc[0] == 0  # was 100 on its 500 deeded acres
+
+
+def test_land_acres_repair_an_invalid_water_polygon():
+    """A self-intersecting (bowtie) lake is repaired, not allowed to raise or
+    return a wrong area: its two triangles each cover a quarter of the parcel."""
+    parcels = gpd.GeoDataFrame({"area_acres": [10.0]}, geometry=[box(0, 0, 100, 100)], crs=CRS)
+    bowtie = Polygon([(0, 0), (100, 100), (100, 0), (0, 100), (0, 0)])
+    assert not bowtie.is_valid
+    result = parcel_land_acres(parcels, _water([bowtie])).iloc[0]
+    assert result["water_share"] == pytest.approx(0.5)
+    assert result["land_acres"] == pytest.approx(5.0)

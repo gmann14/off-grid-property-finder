@@ -4,10 +4,13 @@ import logging
 from pathlib import Path
 
 import geopandas as gpd
+import numpy as np
+import pandas as pd
 import shapely
 from shapely.geometry import box
 
 from src.config import Config
+from src.constants import SQ_M_PER_ACRE
 
 logger = logging.getLogger("property_finder")
 
@@ -221,3 +224,73 @@ def parcel_assignment_points(
         moved += 1
     logger.info("Parcel assignment: %d cell(s) with a centroid in water use a point on their land part", moved)
     return points
+
+
+
+def _repaired(geoms: np.ndarray) -> np.ndarray:
+    """``geoms`` with invalid ones made valid (polygonal part only)."""
+    invalid = ~shapely.is_valid(geoms) & ~shapely.is_missing(geoms)
+    if not invalid.any():
+        return geoms
+    geoms = geoms.copy()
+    geoms[invalid] = [_polygonal(g) for g in shapely.make_valid(geoms[invalid])]
+    return geoms
+
+
+def parcel_land_acres(
+    parcels: gpd.GeoDataFrame,
+    exclusions: gpd.GeoDataFrame | None,
+) -> pd.DataFrame:
+    """Each parcel's land acres and water share.
+
+    ``area_acres`` is the parcel's whole mapped area, which takes in any water
+    the parcel holds: a water lot, or a lakefront lot drawn out into the lake.
+    Scored as acreage, that ranked a 25-acre lot that is 60% lake 7th.
+
+    Returns ``water_share``, the share of the parcel under a "water" exclusion
+    polygon (water under several polygons counts once), and ``land_acres`` =
+    ``area_acres`` (or the mapped area, without that column) x (1 -
+    water_share). Invalid parcel or water polygons are repaired first. A
+    parcel no water touches keeps its full acreage. With no water layer at all,
+    ``land_acres`` is ``area_acres``, ``water_share`` is left empty (unknown)
+    and a warning says no water was subtracted.
+    """
+    geoms = _repaired(parcels.geometry.values)
+    area_m2 = shapely.area(geoms)
+    if "area_acres" in parcels.columns:
+        acres = parcels["area_acres"].to_numpy(dtype=float)
+    else:
+        acres = area_m2 / SQ_M_PER_ACRE
+    water = None
+    if exclusions is not None and not exclusions.empty:
+        water = exclusions[exclusions["exclusion_reason"].isin(_OVERLAP_ONLY_REASONS)]
+    if water is None or water.empty:
+        logger.warning("No water layer: land_acres = area_acres for all %d parcels "
+                       "(no water subtracted); water_share left empty", len(geoms))
+        return pd.DataFrame({"land_acres": acres, "water_share": np.nan}, index=parcels.index)
+
+    if parcels.crs is not None and water.crs is not None and water.crs != parcels.crs:
+        water = water.to_crs(parcels.crs)
+    water_geoms = _repaired(water.geometry.values)
+    water_geoms = water_geoms[~shapely.is_missing(water_geoms)]
+    water_m2 = np.zeros(len(geoms))
+    p_idx, w_idx = shapely.STRtree(water_geoms).query(geoms, predicate="intersects")
+    if len(p_idx):
+        pieces = shapely.intersection(geoms[p_idx], water_geoms[w_idx])
+        np.add.at(water_m2, p_idx, shapely.area(pieces))
+        # Water under two polygons (a river mapped over a lake) counts once:
+        # parcels with more than one hit use the area of the union.
+        order = np.argsort(p_idx, kind="stable")
+        p_sorted, pieces_sorted = p_idx[order], pieces[order]
+        starts = np.flatnonzero(np.r_[True, p_sorted[1:] != p_sorted[:-1]])
+        ends = np.r_[starts[1:], len(p_sorted)]
+        for s, e in zip(starts, ends):
+            if e - s > 1:
+                water_m2[p_sorted[s]] = shapely.area(shapely.union_all(pieces_sorted[s:e]))
+    with np.errstate(invalid="ignore", divide="ignore"):
+        share = np.where(area_m2 > 0, np.clip(water_m2 / area_m2, 0.0, 1.0), 0.0)
+    land = acres * (1.0 - share)
+    logger.info("Land acres: %d of %d parcels hold water (%.0f of %.0f acres are water)",
+                int((water_m2 > 0).sum()), len(geoms), float(np.nansum(acres - land)),
+                float(np.nansum(acres)))
+    return pd.DataFrame({"land_acres": land, "water_share": share}, index=parcels.index)
