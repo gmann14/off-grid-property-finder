@@ -110,3 +110,23 @@ class TestZonalFrac:
         poly = gpd.GeoSeries([box(0, 0, 200, 200)], crs=CRS)
         with pytest.raises(ValueError):
             grid_zonal_stats(poly, raster_path, stats=("frac",), nodata=NODATA)
+
+
+class TestWhereFilter:
+    def test_array_and_callable_filters_drop_pixels_like_nodata(self, raster_path):
+        poly = gpd.GeoSeries([box(0, 0, 1000, 1000)], crs=CRS)
+        with rasterio.open(raster_path) as src:
+            full = src.read(1)
+        valid = full != NODATA
+        keep = np.zeros(full.shape, dtype=bool)
+        keep[:, :50] = True  # west half only
+        by_array = grid_zonal_stats(poly, raster_path, stats=("mean", "count"), where=keep)
+        assert by_array["count"][0] == int((valid & keep).sum())
+        assert by_array["mean"][0] == pytest.approx(full[valid & keep].mean(), rel=1e-6)
+        by_fn = grid_zonal_stats(poly, raster_path, stats=("mean",), where=lambda a: a > 50)
+        assert by_fn["mean"][0] == pytest.approx(full[valid & (full > 50)].mean(), rel=1e-6)
+
+    def test_mask_of_the_wrong_shape_is_refused(self, raster_path):
+        poly = gpd.GeoSeries([box(0, 0, 200, 200)], crs=CRS)
+        with pytest.raises(ValueError, match="shape"):
+            grid_zonal_stats(poly, raster_path, where=np.ones((5, 5), dtype=bool))

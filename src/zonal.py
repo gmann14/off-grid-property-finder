@@ -24,6 +24,7 @@ def grid_zonal_stats(
     nodata=None,
     frac_range=None,
     band: int = 1,
+    where=None,
 ) -> dict:
     """Per-polygon zonal stats, returned positionally (one value per input geom).
 
@@ -33,6 +34,9 @@ def grid_zonal_stats(
         nodata: override the raster's nodata; excluded from all stats.
         frac_range: (lo, hi) for the "frac" stat — fraction of valid pixels with
             lo <= value <= hi (e.g. south-facing aspect share).
+        where: optional pixel filter — a boolean array shaped like the raster,
+            or a function taking the raster band and returning one. Pixels
+            where it is False are left out of every stat, like nodata.
 
     Returns a dict mapping stat name -> np.ndarray of length len(geoms). Empty
     zones get NaN (or 0.0 for "frac"/"count").
@@ -45,6 +49,12 @@ def grid_zonal_stats(
         transform = src.transform
         rnodata = src.nodata if nodata is None else nodata
         shape = arr.shape
+
+    keep = None
+    if where is not None:
+        keep = np.asarray(where(arr) if callable(where) else where, dtype=bool)
+        if keep.shape != shape:
+            raise ValueError(f"where= mask shape {keep.shape} != raster shape {shape} ({raster_path})")
 
     # Label raster: zone i -> i+1 (0 = background). int32 supports >2B zones.
     labels = rasterize(
@@ -61,6 +71,8 @@ def grid_zonal_stats(
         valid &= arr != rnodata
     elif rnodata is not None:
         valid &= ~np.isnan(arr)
+    if keep is not None:
+        valid &= keep
 
     lab = labels[valid]
     val = arr[valid].astype("float64")

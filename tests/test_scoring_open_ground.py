@@ -53,3 +53,45 @@ def test_open_ground_low_when_constrained(tmp_path, small_grid):
 def test_open_ground_no_mask(tmp_path, small_grid):
     scores = score_open_ground(small_grid, _cfg(tmp_path))
     assert (scores == 0).all()
+
+
+# --- south bonus: share of the OPEN ground that faces south -------------------
+
+def _write(path, arr, dtype, nodata):
+    h, w = arr.shape
+    with rasterio.open(path, "w", driver="GTiff", height=h, width=w, count=1, dtype=dtype,
+                       crs=CRS, transform=from_bounds(*BBOX, w, h), nodata=nodata) as d:
+        d.write(arr.astype(dtype), 1)
+
+
+def _open_rows_mask():
+    """20% open ground in every 250 m cell (every 5th 10 m row) -> base 85."""
+    mask = np.zeros((100, 100), dtype=np.uint8)
+    mask[::5, :] = 1
+    return mask
+
+
+def test_south_bonus_needs_the_open_ground_itself_to_face_south(tmp_path, small_grid):
+    """Regression: the bonus was earned when 25% of the WHOLE cell faced
+    90-270 deg, whatever faced south. Here the open rows face north and the
+    forest between them faces south (80% of the cell)."""
+    mask = _open_rows_mask()
+    _write(tmp_path / "buildability_mask.tif", mask, "uint8", 255)
+    _write(tmp_path / "aspect.tif", np.where(mask == 1, 0.0, 180.0), "float32", -9999)
+    assert (score_open_ground(small_grid, _cfg(tmp_path)) == 85).all()
+
+
+def test_south_bonus_counts_south_facing_open_ground(tmp_path, small_grid):
+    """The open rows face south (only 20% of the cell, which missed the old
+    whole-cell 25% cut): all of the open ground faces south, so +10."""
+    mask = _open_rows_mask()
+    _write(tmp_path / "buildability_mask.tif", mask, "uint8", 255)
+    _write(tmp_path / "aspect.tif", np.where(mask == 1, 180.0, 0.0), "float32", -9999)
+    assert (score_open_ground(small_grid, _cfg(tmp_path)) == 95).all()
+
+
+def test_no_south_bonus_without_open_ground(tmp_path, small_grid):
+    """Regression: 10,182 real cells with 0% open ground scored 10, not 0."""
+    _write(tmp_path / "buildability_mask.tif", np.zeros((100, 100)), "uint8", 255)
+    _write(tmp_path / "aspect.tif", np.full((100, 100), 180.0), "float32", -9999)
+    assert (score_open_ground(small_grid, _cfg(tmp_path)) == 0).all()
