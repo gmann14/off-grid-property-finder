@@ -339,6 +339,63 @@ def test_ingest_parcels_missing_returns_none(tmp_path):
     assert ingest_parcels(cfg, source="local") is None
 
 
+# --- invalid and multipart parcels at the bbox edge -----------------------
+
+def test_ingest_parcels_repairs_self_intersecting_parcel(tmp_path):
+    """A self-intersecting (bow-tie) parcel crossing the bbox edge made gpd.clip
+    raise a GEOS TopologyException and took the whole ingest down."""
+    from shapely.geometry import Polygon
+
+    cfg = _config(tmp_path)
+    parcels_dir = cfg.paths.raw / "parcels"
+    parcels_dir.mkdir(parents=True)
+    xmin, ymin, xmax, ymax = BBOX
+    bowtie = Polygon([(xmax - 200, ymin + 100), (xmax + 200, ymin + 300), (xmax + 200, ymin + 100),
+                      (xmax - 200, ymin + 300), (xmax - 200, ymin + 100)])
+    assert not bowtie.is_valid
+    gdf = gpd.GeoDataFrame(
+        {"PID": ["60010001", "60010002"]},
+        geometry=[bowtie, box(xmin, ymin + 500, xmin + 200, ymin + 700)],
+        crs=CRS,
+    )
+    gdf.to_file(parcels_dir / "parcels.gpkg", driver="GPKG")
+
+    out = ingest_parcels(cfg, source="local")
+    assert out is not None
+    result = gpd.read_file(out).set_index("PID")
+    assert sorted(result.index) == ["60010001", "60010002"]
+    assert result.geometry.is_valid.all()
+    # the repaired bow-tie is two triangles (base 200 m, height 200 m) meeting
+    # on the bbox edge; one is inside
+    assert result.geometry["60010001"].area == pytest.approx(200 * 200 / 2)
+    assert result["area_acres"]["60010001"] == pytest.approx(2 * 200 * 200 / 2 / 4046.86)
+
+
+def test_ingest_parcels_keeps_multipart_parcel_touching_bbox_edge(tmp_path):
+    """A multipart parcel whose second part only touches the bbox edge from
+    outside clips to a GeometryCollection (polygon + line); the polygon-type
+    filter used to drop the whole parcel."""
+    from shapely.geometry import MultiPolygon
+
+    cfg = _config(tmp_path)
+    parcels_dir = cfg.paths.raw / "parcels"
+    parcels_dir.mkdir(parents=True)
+    xmin, ymin, xmax, ymax = BBOX
+    parcel = MultiPolygon([box(xmin + 100, ymin + 100, xmin + 300, ymin + 300),
+                           box(xmax, ymin + 100, xmax + 200, ymin + 300)])
+    gdf = gpd.GeoDataFrame({"PID": ["60010001", "60010002"]},
+                           geometry=[parcel, box(xmin, ymin + 500, xmin + 200, ymin + 700)], crs=CRS)
+    gdf.to_file(parcels_dir / "parcels.gpkg", driver="GPKG")
+
+    out = ingest_parcels(cfg, source="local")
+    result = gpd.read_file(out).set_index("PID")
+    assert "60010001" in result.index
+    geom = result.geometry["60010001"]
+    assert geom.geom_type in ("Polygon", "MultiPolygon")
+    assert geom.area == pytest.approx(200 * 200)
+    assert result["area_acres"]["60010001"] == pytest.approx(2 * 200 * 200 / 4046.86)
+
+
 # --- area_acres is the whole parcel, not the part inside the bbox ---------
 
 def test_ingest_parcels_area_acres_is_whole_parcel_across_bbox_edge(tmp_path):

@@ -567,6 +567,38 @@ def ingest_protected_areas(config: Config) -> Path | None:
     return out_path
 
 
+def _repair_polygons(gdf: gpd.GeoDataFrame, label: str) -> gpd.GeoDataFrame:
+    """Make invalid polygons valid (keeping their polygonal part, as
+    exclusions._load_layer does); rows with no geometry, or none left after
+    repair, are dropped. Valid rows are untouched."""
+    from src.exclusions import _polygonal
+
+    gdf = gdf[gdf.geometry.notna() & ~gdf.geometry.is_empty]
+    invalid = ~gdf.geometry.is_valid
+    if not invalid.any():
+        return gdf
+    gdf = gdf.copy()
+    gdf.loc[invalid, "geometry"] = gdf.loc[invalid].geometry.make_valid().apply(_polygonal)
+    n_lost = int(gdf.geometry.isna().sum())
+    gdf = gdf[gdf.geometry.notna()]
+    logger.info("Repaired %d invalid %s polygon(s)%s", int(invalid.sum()), label,
+                f" ({n_lost} had no polygonal part left and were dropped)" if n_lost else "")
+    return gdf
+
+
+def _polygonal_parts(gdf: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
+    """Replace GeometryCollections with their polygonal part (None if they
+    have none); other rows are untouched."""
+    from src.exclusions import _polygonal
+
+    is_gc = gdf.geometry.geom_type == "GeometryCollection"
+    if not is_gc.any():
+        return gdf
+    gdf = gdf.copy()
+    gdf.loc[is_gc, "geometry"] = gdf.loc[is_gc].geometry.apply(_polygonal)
+    return gdf[gdf.geometry.notna()]
+
+
 def _normalize_parcel_fields(gdf: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
     """Rename source PID/AAN columns to canonical ``PID``/``AAN``.
 
@@ -879,6 +911,9 @@ def ingest_parcels(
         gdf = gpd.read_file(src_file)
         gdf = _reproject_to_working(gdf, config.working_crs)
 
+    # One self-intersecting parcel makes the clip (and the dissolve) raise a
+    # GEOS TopologyException, so repair invalid polygons first.
+    gdf = _repair_polygons(gdf, "parcel")
     gdf = _normalize_parcel_fields(gdf)
 
     # Measure parcels the bbox cuts before clipping them, so area_acres is the
@@ -892,7 +927,10 @@ def ingest_parcels(
         logger.warning("No parcels within study area")
         return None
     gdf = gpd.clip(gdf, bbox_geom)
-    # Drop slivers / non-polygon leftovers from clipping
+    # A multipart parcel with a part that only touches the bbox edge clips to a
+    # GeometryCollection (polygon + line): keep its polygonal part. Then drop
+    # slivers / non-polygon leftovers from clipping.
+    gdf = _polygonal_parts(gdf)
     gdf = gdf[gdf.geometry.geom_type.isin(("Polygon", "MultiPolygon"))].copy()
 
     from src.constants import MIN_PID_COVERAGE_FRACTION
