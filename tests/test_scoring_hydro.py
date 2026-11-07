@@ -218,3 +218,61 @@ def test_unreadable_dem_is_logged(tmp_path, caplog):
     with caplog.at_level(logging.WARNING, logger="property_finder"):
         score_hydro(candidates, config)
     assert "could not open DEM" in caplog.text
+
+
+# --- drainage read along the stream's own line (H1) -------------------------
+X0, Y0 = 380000.0, 4900000.0
+FACC_BOUNDS = (X0, Y0 - 500, X0 + 1000, Y0 + 500)  # 50 x 50 px of 20 m
+BROOK_CELLS = 60000  # 60,000 px of 400 m² = 24 km²
+
+
+def _wandering_brook(tmp_path, channel_rows=None, line=None, flowdir=1):
+    """A 24 km² routed channel 60 m north of the mapped brook line, except
+    for 40 m around x = X0+400 where the line crosses it.
+
+    The mapped brook runs west -> east (digitised downstream) at y = Y0+10,
+    dropping 2 m per 100 m. The cell's centre is 50 m east of the crossing.
+    """
+    facc = np.full((50, 50), 10.0)
+    if channel_rows is None:
+        channel_rows = {c: 21 for c in range(50)}       # y in [Y0+60, Y0+80)
+        for c in (19, 20):                              # x in [X0+380, X0+420)
+            channel_rows[c] = 24                        # y in [Y0, Y0+20): on the line
+    for c, r in channel_rows.items():
+        facc[r, c] = BROOK_CELLS
+    _write_raster(tmp_path / "flow_accumulation.tif", FACC_BOUNDS, facc, nodata=-32768)
+    xs = np.linspace(X0, X0 + 1000, 100)
+    _write_raster(tmp_path / "dem.tif", FACC_BOUNDS,
+                  np.tile(100.0 - 0.02 * (xs - X0), (100, 1)))
+    line = line or LineString([(X0, Y0 + 10), (X0 + 1000, Y0 + 10)])
+    gpd.GeoDataFrame(
+        {"FEAT_CODE": ["WARV50"], "LINE_CLASS": [1], "FLOWDIR": [flowdir],
+         "MINZ": [80.0], "MAXZ": [100.0]},
+        geometry=[line], crs="EPSG:2961",
+    ).to_file(tmp_path / "streams.gpkg", driver="GPKG")
+    cx, cy = X0 + 450, Y0 + 60
+    cell = box(cx - 125, cy - 125, cx + 125, cy + 125)
+    candidates = gpd.GeoDataFrame({"cell_id": [0]}, geometry=[cell], crs="EPSG:2961")
+    return candidates, _hydro_config(tmp_path, FACC_BOUNDS)
+
+
+def test_drainage_is_read_along_the_line_not_at_one_point(tmp_path):
+    """Regression (cells 1214, 1862): the single 3x3 read at the point nearest
+    the cell centre missed the routed channel (0.004 km² < 0.5 km² minimum),
+    so a 24 km² brook with 10 m+ of head scored 0."""
+    candidates, config = _wandering_brook(tmp_path)
+    assert score_hydro(candidates, config).iloc[0] == 100
+
+
+def test_drainage_read_skips_the_receiving_river_at_the_junction(tmp_path):
+    """A tributary whose only big read is in its last 40 m (where it meets its
+    receiving river) must not take the receiving river's drainage."""
+    rows = {49: 24}  # x in [X0+980, X0+1000): the junction pixel at the line's end
+    candidates, config = _wandering_brook(tmp_path, channel_rows=rows)
+    cell = box(X0 + 825, Y0 - 115, X0 + 1075, Y0 + 135)  # centre 50 m from the end
+    candidates = candidates.set_geometry([cell])
+    assert score_hydro(candidates, config).iloc[0] == 0
+    # digitised the other way (FLOWDIR 0: direction unknown) the end is kept
+    candidates, config = _wandering_brook(tmp_path, channel_rows=rows, flowdir=0)
+    candidates = candidates.set_geometry([cell])
+    assert score_hydro(candidates, config).iloc[0] == 100

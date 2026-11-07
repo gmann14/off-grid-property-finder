@@ -6,6 +6,7 @@ from pathlib import Path
 import geopandas as gpd
 import numpy as np
 import pandas as pd
+import shapely
 from shapely.geometry import LineString
 from shapely.strtree import STRtree
 
@@ -14,8 +15,11 @@ from src.constants import (
     GRAVITY,
     DEFAULT_EFFICIENCY,
     FLOW_ACCUM_MIN_VALID_CELLS,
+    HYDRO_DRAINAGE_JUNCTION_SKIP_M,
+    HYDRO_DRAINAGE_WINDOW_M,
     HYDRO_PAIR_SEPARATIONS,
     HYDRO_POWER_THRESHOLDS,
+    HYDRO_PROFILE_STEP_M,
     MIN_DRAINAGE_AREA_KM2,
     MIN_HEAD_M,
     SPECIFIC_RUNOFF_LOW,
@@ -55,28 +59,90 @@ def flow_accumulation_valid(path: Path) -> bool:
         return False
 
 
-def _accum_drainage_km2(facc_src, x: float, y: float, px_km2: float) -> float | None:
-    """Drainage area (km²) at a point: max upstream-cell count in a 3×3 window.
+class _DrainageGrid:
+    """Flow accumulation as drainage area (km²), 3×3-max filtered.
 
-    The 3×3 max tolerates slight misalignment between the mapped stream line and
-    the DEM-derived channel pixel.
+    The 3×3 max tolerates the mapped stream line sitting one routing pixel off
+    the DEM-derived channel. Nodata (and pixels whose whole 3×3 is nodata) are
+    NaN.
     """
-    res = abs(facc_src.res[0])
-    best = None
-    for dx in (-res, 0.0, res):
-        for dy in (-res, 0.0, res):
-            try:
-                v = float(next(facc_src.sample([(x + dx, y + dy)]))[0])
-            except Exception:
-                continue
-            nd = facc_src.nodata
-            if nd is not None and v == nd:
-                continue
-            if best is None or v > best:
-                best = v
-    if best is None:
-        return None
-    return best * px_km2
+
+    def __init__(self, facc_src):
+        from scipy.ndimage import maximum_filter
+
+        arr = facc_src.read(1).astype("float64")
+        nd = facc_src.nodata
+        bad = ~np.isfinite(arr)
+        if nd is not None and not np.isnan(nd):
+            bad |= arr == nd
+        arr[bad] = -np.inf
+        arr = maximum_filter(arr, size=3, mode="constant", cval=-np.inf)
+        arr[np.isneginf(arr)] = np.nan
+        self.km2 = arr * (abs(facc_src.res[0]) * abs(facc_src.res[1])) / 1e6
+        self.transform = facc_src.transform
+
+    def values(self, xy: np.ndarray) -> np.ndarray:
+        return _grid_lookup(self.km2, self.transform, xy)
+
+
+def _grid_lookup(arr: np.ndarray, transform, xy: np.ndarray) -> np.ndarray:
+    """Value of the pixel containing each (x, y); NaN outside the grid."""
+    out = np.full(len(xy), np.nan)
+    if len(xy) == 0:
+        return out
+    cols, rows = ~transform * (xy[:, 0], xy[:, 1])
+    r = np.floor(rows).astype(np.int64)
+    c = np.floor(cols).astype(np.int64)
+    inside = (r >= 0) & (r < arr.shape[0]) & (c >= 0) & (c < arr.shape[1])
+    out[inside] = arr[r[inside], c[inside]]
+    return out
+
+
+def _along_line_max(values: np.ndarray, half_window: int) -> np.ndarray:
+    """Max of the valid values within ±half_window samples (NaN if none)."""
+    from scipy.ndimage import maximum_filter1d
+
+    v = np.where(np.isnan(values), -np.inf, values)
+    m = maximum_filter1d(v, size=2 * half_window + 1, mode="constant", cval=-np.inf)
+    return np.where(np.isneginf(m), np.nan, m)
+
+
+def _line_samples(geom, step: float = HYDRO_PROFILE_STEP_M) -> tuple[np.ndarray, np.ndarray]:
+    """Distances s = 0, step, 2·step, ... (≤ length) along a line and their (x, y)."""
+    s = np.arange(0.0, geom.length + 1e-9, step)
+    xy = shapely.get_coordinates(shapely.line_interpolate_point(geom, s))
+    return s, xy
+
+
+def _drainage_profile(grid: _DrainageGrid, s: np.ndarray, xy: np.ndarray,
+                      length: float, flowdir) -> np.ndarray:
+    """Drainage area (km²) at each sample, read along the stream's own line.
+
+    Each sample takes the max of the 3×3 reads within HYDRO_DRAINAGE_WINDOW_M
+    along the same line, so a mapped line that wanders off the routed channel
+    still finds its own channel where it crosses back over it. Reading along
+    the line (rather than snapping to the biggest accumulation within a
+    radius) keeps a brook from picking up a bigger river running nearby. The
+    last HYDRO_DRAINAGE_JUNCTION_SKIP_M of a line drawn in its flow direction
+    (FLOWDIR = 1) is left out of the reads, because there it joins its
+    receiving water and the 3×3 read is the receiving water's drainage; a
+    line shorter than that keeps only its upstream end.
+    """
+    raw = grid.values(xy)
+    if _flowdir_is_downstream(flowdir) and len(raw) > 0:
+        junction = s >= length - HYDRO_DRAINAGE_JUNCTION_SKIP_M
+        junction[0] = False
+        raw = np.where(junction, np.nan, raw)
+    half = max(0, int(round(HYDRO_DRAINAGE_WINDOW_M / HYDRO_PROFILE_STEP_M)))
+    return _along_line_max(raw, half)
+
+
+def _flowdir_is_downstream(flowdir) -> bool:
+    """NSHN FLOWDIR = 1: the line is digitised in its flow direction."""
+    try:
+        return int(flowdir) == 1
+    except (TypeError, ValueError):
+        return False
 
 
 def _estimate_flow_rate(drainage_area_km2: float) -> float:
@@ -294,20 +360,20 @@ def score_hydro(candidates: gpd.GeoDataFrame, config: Config) -> pd.Series:
     # Prefer a validated flow-accumulation raster for drainage area; otherwise
     # fall back to the segment-length proxy (and the confidence score reflects it).
     facc_path = config.paths.processed / "flow_accumulation.tif"
-    facc_src = None
-    facc_px_km2 = 0.0
+    drainage_grid = None
     if flow_accumulation_valid(facc_path):
         try:
             import rasterio
-            facc_src = rasterio.open(facc_path)
-            facc_px_km2 = (abs(facc_src.res[0]) * abs(facc_src.res[1])) / 1e6
+            with rasterio.open(facc_path) as facc_src:
+                drainage_grid = _DrainageGrid(facc_src)
             logger.info("Hydro: using validated flow-accumulation raster for drainage area")
         except Exception as exc:
-            logger.warning("Hydro: could not open flow accumulation %s (%s: %s)",
+            logger.warning("Hydro: could not read flow accumulation %s (%s: %s)",
                            facc_path, type(exc).__name__, exc)
-            facc_src = None
-    if facc_src is None:
+            drainage_grid = None
+    if drainage_grid is None:
         logger.info("Hydro: flow-accumulation unavailable/invalid; using segment-length proxy")
+    drainage_profiles: dict[int, tuple[np.ndarray, np.ndarray]] = {}
 
     dem_src = _open_dem(dem_path)
     has_dem = dem_src is not None
@@ -332,13 +398,19 @@ def score_hydro(candidates: gpd.GeoDataFrame, config: Config) -> pd.Series:
             stream = streams.iloc[i]
             stream_geom = stream.geometry
 
-            # Drainage area at the point on the stream nearest this cell.
+            # Drainage area at the point on the stream nearest this cell,
+            # read along the stream's own line (see _drainage_profile).
             drainage_area = None
-            if facc_src is not None:
-                nearest_pt = stream_geom.interpolate(stream_geom.project(cell.geometry.centroid))
-                drainage_area = _accum_drainage_km2(
-                    facc_src, nearest_pt.x, nearest_pt.y, facc_px_km2
-                )
+            if drainage_grid is not None:
+                if i not in drainage_profiles:
+                    s, xy = _line_samples(stream_geom)
+                    drainage_profiles[i] = (s, _drainage_profile(
+                        drainage_grid, s, xy, stream_geom.length, stream.get("FLOWDIR")))
+                s, prof = drainage_profiles[i]
+                j = int(np.clip(np.rint(stream_geom.project(cell.geometry.centroid)
+                                        / HYDRO_PROFILE_STEP_M), 0, len(s) - 1))
+                if len(s) and np.isfinite(prof[j]):
+                    drainage_area = float(prof[j])
             if drainage_area is None:
                 drainage_area = _estimate_drainage_area(stream, streams)
             if drainage_area < MIN_DRAINAGE_AREA_KM2:
@@ -387,7 +459,5 @@ def score_hydro(candidates: gpd.GeoDataFrame, config: Config) -> pd.Series:
 
     if dem_src is not None:
         dem_src.close()
-    if facc_src is not None:
-        facc_src.close()
 
     return pd.Series(scores, index=candidates.index, dtype=float)

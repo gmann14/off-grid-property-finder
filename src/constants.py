@@ -245,6 +245,18 @@ SPECIFIC_RUNOFF_LOW = 8.0
 # Stream search buffer (meters beyond candidate cell)
 STREAM_BUFFER_M = 100
 
+# Drainage area from the flow-accumulation raster is read along the stream's
+# own mapped line: the max of the 3x3-pixel reads within this distance either
+# side of a point. NSHN lines wander more than one 20 m routing pixel off the
+# DEM-routed channel, so a single-point read can miss a 20+ km² brook entirely.
+HYDRO_DRAINAGE_WINDOW_M = 60.0
+# ...except the last stretch of a line drawn in its flow direction
+# (FLOWDIR = 1), where it meets its receiving river or lake and the 3x3 read
+# picks up the receiving water's drainage instead of its own.
+HYDRO_DRAINAGE_JUNCTION_SKIP_M = 40.0
+# Spacing (m) of the samples taken along each stream line.
+HYDRO_PROFILE_STEP_M = 5.0
+
 # Solar aspect classification
 SOLAR_OPTIMAL_ASPECT = (135, 225)
 SOLAR_ACCEPTABLE_ASPECT = (90, 270)
