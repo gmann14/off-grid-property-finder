@@ -13,34 +13,56 @@ from src.config import Config
 logger = logging.getLogger("property_finder")
 
 
-def _score_color(score: float | None) -> str:
-    """Map a 0-100 score to a color for the map (grey for no score: None or NaN)."""
+def _tier(score: float | None):
+    """The SCORE_TIERS row a score falls in, or None for no score (None/NaN)."""
+    from src.constants import SCORE_TIERS
+
     if score is None or pd.isna(score):
-        return "#808080"
-    if score >= 80:
-        return "#1a9641"
-    if score >= 60:
-        return "#a6d96a"
-    if score >= 40:
-        return "#ffffbf"
-    if score >= 20:
-        return "#fdae61"
-    return "#d7191c"
+        return None
+    for tier in SCORE_TIERS:
+        if score >= tier[0]:
+            return tier
+    return SCORE_TIERS[-1]          # below the lowest floor (negative): worst tier
+
+
+def _score_color(score: float | None) -> str:
+    """Map a 0-100 score to its tier colour (grey for no score: None or NaN)."""
+    from src.constants import NO_SCORE_COLOUR
+
+    tier = _tier(score)
+    return NO_SCORE_COLOUR if tier is None else tier[2]
 
 
 def _score_opacity(score: float | None) -> float:
-    """Higher scores get more opaque so top candidates stand out."""
-    if score is None or pd.isna(score):
-        return 0.15
-    if score >= 80:
-        return 0.75
-    if score >= 60:
-        return 0.55
-    if score >= 40:
-        return 0.40
-    if score >= 20:
-        return 0.35
-    return 0.30
+    """Higher tiers are more opaque so top candidates stand out."""
+    tier = _tier(score)
+    return 0.15 if tier is None else tier[3]
+
+
+def _tier_layers() -> list[tuple[str, float, float, bool]]:
+    """(layer name, floor, ceiling, shown by default) per tier, best first; only
+    the top tier is on by default."""
+    from src.constants import SCORE_TIERS
+
+    layers, ceiling = [], None
+    for i, (floor, label, _colour, _op) in enumerate(SCORE_TIERS):
+        span = f"{floor}-100" if ceiling is None else f"{floor}-{ceiling - 1}"
+        if i == len(SCORE_TIERS) - 1:
+            span = f"0-{ceiling - 1}" if ceiling is not None else "0-100"
+        layers.append((f"{label} ({span})", floor, ceiling, i == 0))
+        ceiling = floor
+    return layers
+
+
+def _legend_rows() -> str:
+    from src.constants import NO_SCORE_COLOUR, SCORE_TIERS
+
+    swatch = ('<i style="background:{c};width:16px;height:16px;display:inline-block;'
+              'margin:3px 6px 0 0;vertical-align:middle;border:1px solid #999;"></i> {t}<br>')
+    rows = [swatch.format(c=colour, t=name.replace("-", "–").replace(f"{label} (", "").rstrip(")") + f" ({label})")
+            for (name, *_), (_f, label, colour, _o) in zip(_tier_layers(), SCORE_TIERS)]
+    rows.append(swatch.format(c=NO_SCORE_COLOUR, t="Excluded (protected, flood or water)"))
+    return "\n        ".join(rows)
 
 
 def _truncate_coords(geojson: dict, precision: int = 5) -> None:
@@ -406,7 +428,70 @@ def _add_buildings(m, buildings_path: Path):
     logger.info("Added %d building markers to map", len(buildings))
 
 
-def _add_parcels(m, parcels_path: Path):
+def _parcel_popup_js(config: Config | None) -> str:
+    """Leaflet ``onEachFeature`` that binds a click popup explaining a parcel's
+    rank: parcel score = cell part + size part, the top cells' criterion means
+    (which rebuild ``cell_score``), land vs mapped acres, and lookup links.
+
+    Built in the browser from each feature's properties, so it adds no HTML per
+    parcel to map.html. Weights and the cell/size split come from ``config``
+    (the defaults when it is None), matching the scoring run.
+    """
+    from src.constants import DEFAULT_WEIGHTS, PARCEL_CELL_WEIGHT, PARCEL_TOP_N_CELLS
+
+    if config is None:
+        weights = {k: float(v) for k, v in DEFAULT_WEIGHTS.items()}
+        total = sum(weights.values()) or 1.0
+        weights = {k: v / total * 100 for k, v in weights.items()}
+        agg = {}
+    else:
+        weights = config.enabled_weights()
+        agg = config.preferences.get("parcel_aggregation", {}) or {}
+    cell_w = float(agg.get("cell_weight", PARCEL_CELL_WEIGHT))
+    top_n = int(agg.get("top_n", PARCEL_TOP_N_CELLS))
+    criteria = [[name, _CRITERION_INFO.get(name, (name.replace("_", " ").capitalize(), "", ""))[0],
+                 round(w, 2)] for name, w in weights.items() if w > 0]
+    return f"""function(feature, layer) {{
+    var p = feature.properties || {{}};
+    var CRITERIA = {json.dumps(criteria)};
+    var CELL_W = {cell_w!r}, TOP_N = {top_n};
+    function esc(s) {{ return String(s).replace(/[&<>"']/g, function(c) {{
+        return {{"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"}}[c]; }}); }}
+    function num(v, d) {{
+        return (v === null || v === undefined || v === "" || (typeof v === "number" && !isFinite(v)))
+            ? "n/a" : Number(v).toFixed(d); }}
+    function row(k, v) {{ return "<tr><td style='padding:1px 8px 1px 0;color:#555'>" + k +
+        "</td><td style='text-align:right'><b>" + v + "</b></td></tr>"; }}
+    var html = "<div style='font:12px Arial,sans-serif;min-width:230px'>" +
+        "<b style='font-size:13px'>PID " + esc(p.PID === undefined ? "n/a" : p.PID) + "</b>" +
+        " &middot; rank " + num(p.rank, 0) + "<table>" +
+        row("Parcel score", num(p.score, 1)) +
+        row(Math.round(CELL_W * 100) + "% &times; cell score (top " + TOP_N + " cells)", num(p.cell_score, 1)) +
+        row(Math.round((1 - CELL_W) * 100) + "% &times; land-acreage score", num(p.size_score, 1)) +
+        "</table><div style='margin-top:4px;color:#555'>Top cells' criterion means (weight):</div><table>";
+    for (var i = 0; i < CRITERIA.length; i++) {{
+        var c = CRITERIA[i];
+        if (("top_" + c[0]) in p) html += row(esc(c[1]) + " (" + Math.round(c[2]) + "%)", num(p["top_" + c[0]], 0));
+    }}
+    var water = (p.water_share === null || p.water_share === undefined) ? "n/a" : num(100 * p.water_share, 1) + "%";
+    html += "</table><table style='margin-top:4px'>" +
+        row("Land acres / mapped", num(p.land_acres, 1) + " / " + num(p.area_acres, 1)) +
+        row("Water in parcel", water) +
+        row("Scored cells", num(p.n_cells, 0)) +
+        row("Type", esc(p.parcel_type === undefined || p.parcel_type === null ? "n/a" : p.parcel_type) +
+            (p.n_buildings ? " (" + num(p.n_buildings, 0) + " bldg)" : "")) +
+        (p.severance_candidate === true || p.severance_candidate === "True" ? row("Severance candidate", "yes") : "") +
+        row("Confidence", num(p.confidence, 0)) + "</table>";
+    if (p.flags) html += "<div style='color:#a15c00;margin-top:3px'>" + esc(p.flags) + "</div>";
+    var c0 = layer.getBounds ? layer.getBounds().getCenter() : null;
+    html += "<div style='margin-top:5px'>Look up the PID on <a href='https://www.viewpoint.ca' target='_blank' rel='noopener'>ViewPoint</a>" +
+        (c0 ? " &middot; <a href='https://www.google.com/maps?q=" + c0.lat.toFixed(6) + "," + c0.lng.toFixed(6) +
+              "' target='_blank' rel='noopener'>Maps</a>" : "") + "</div></div>";
+    layer.bindPopup(html, {{maxWidth: 340}});
+}}"""
+
+
+def _add_parcels(m, parcels_path: Path, config: Config | None = None):
     """Add scored parcels (Stage B) colored by parcel score, PID in tooltip.
 
     Only parcels with an actual score are included. Unscored parcels (no
@@ -429,11 +514,20 @@ def _add_parcels(m, parcels_path: Path):
     parcels = parcels.to_crs("EPSG:4326")
     parcels.geometry = parcels.geometry.simplify(tolerance=0.00002)
 
+    top_cols = [c for c in parcels.columns if c.startswith("top_")]
     keep = [c for c in ["geometry", "PID", "AAN", "score", "rank",
-                        "cell_score", "n_cells", "area_acres", "land_acres",
-                        "parcel_type", "n_buildings", "severance_candidate"]
+                        "cell_score", "size_score", "n_cells", "area_acres", "land_acres",
+                        "water_share", *top_cols, "confidence", "parcel_type",
+                        "n_buildings", "severance_candidate", "flags"]
             if c in parcels.columns]
-    parcels = parcels[keep]
+    parcels = parcels[keep].copy()
+    # One decimal is all the popup and tooltip show; full precision is in the CSV.
+    for col in ["score", "cell_score", "size_score", "area_acres", "land_acres",
+                "confidence", *top_cols]:
+        if col in parcels.columns:
+            parcels[col] = parcels[col].astype(float).round(1)
+    if "water_share" in parcels.columns:
+        parcels["water_share"] = parcels["water_share"].astype(float).round(3)
 
     parcel_group = folium.FeatureGroup(name="Scored Parcels (PID)", show=False)
     geojson = json.loads(parcels.to_json())
@@ -464,6 +558,7 @@ def _add_parcels(m, parcels_path: Path):
             aliases=[aliases.get(f, f) for f in fields],
             localize=True,
         ) if fields else None,
+        on_each_feature=folium.JsCode(_parcel_popup_js(config)),
     ).add_to(parcel_group)
     parcel_group.add_to(m)
     logger.info("Added %d scored parcels to map", len(parcels))
@@ -659,11 +754,9 @@ def run_visualize(config: Config, logger: logging.Logger) -> bool:
 
     # --- Score band layers (only Excellent on by default) ---
     band_defs = [
-        ("Excellent (80-100)", lambda s: pd.notna(s) and s >= 80, True),
-        ("Good (60-79)", lambda s: pd.notna(s) and 60 <= s < 80, False),
-        ("Fair (40-59)", lambda s: pd.notna(s) and 40 <= s < 60, False),
-        ("Poor (20-39)", lambda s: pd.notna(s) and 20 <= s < 40, False),
-        ("Unsuitable (0-19)", lambda s: pd.notna(s) and s < 20, False),
+        (name, (lambda s, lo=floor, hi=ceiling:
+                pd.notna(s) and (s >= lo or lo == 0) and (hi is None or s < hi)), show)
+        for name, floor, ceiling, show in _tier_layers()
     ]
 
     # Columns to include in GeoJSON (drop heavy/unnecessary ones)
@@ -731,7 +824,7 @@ def run_visualize(config: Config, logger: logging.Logger) -> bool:
 
     parcels_path = output / "scored_parcels.gpkg"
     if parcels_path.exists():
-        _add_parcels(m, parcels_path)
+        _add_parcels(m, parcels_path, config)
 
     dem_path = processed / "dem.tif"
     if dem_path.exists():
@@ -758,12 +851,7 @@ def run_visualize(config: Config, logger: logging.Logger) -> bool:
         overflow-y: auto;
     ">
         <b style="font-size: 14px;">Suitability Score</b><br>
-        <i style="background:#1a9641;width:16px;height:16px;display:inline-block;margin:3px 6px 0 0;vertical-align:middle;border:1px solid #999;"></i> 80–100 (Excellent)<br>
-        <i style="background:#a6d96a;width:16px;height:16px;display:inline-block;margin:3px 6px 0 0;vertical-align:middle;border:1px solid #999;"></i> 60–79 (Good)<br>
-        <i style="background:#ffffbf;width:16px;height:16px;display:inline-block;margin:3px 6px 0 0;vertical-align:middle;border:1px solid #999;"></i> 40–59 (Fair)<br>
-        <i style="background:#fdae61;width:16px;height:16px;display:inline-block;margin:3px 6px 0 0;vertical-align:middle;border:1px solid #999;"></i> 20–39 (Poor)<br>
-        <i style="background:#d7191c;width:16px;height:16px;display:inline-block;margin:3px 6px 0 0;vertical-align:middle;border:1px solid #999;"></i> 0–19 (Unsuitable)<br>
-        <i style="background:#808080;width:16px;height:16px;display:inline-block;margin:3px 6px 0 0;vertical-align:middle;border:1px solid #999;"></i> Excluded<br>
+        """ + _legend_rows() + """
         <hr style="margin: 6px 0;">
         <b style="font-size: 13px;">Overlays</b><br>
         <span style="color:#2166ac;">&#9473;&#9473;</span> Streams & Rivers<br>
@@ -771,7 +859,7 @@ def run_visualize(config: Config, logger: logging.Logger) -> bool:
         <i style="background:#9467bd;opacity:0.4;width:16px;height:16px;display:inline-block;margin:3px 6px 0 0;vertical-align:middle;border:1px solid #7b4ea3;"></i> Crown Land<br>
         <i style="background:#d73027;opacity:0.3;width:16px;height:16px;display:inline-block;margin:3px 6px 0 0;vertical-align:middle;border:1px dashed #d73027;"></i> Protected Areas<br>
         <i style="background:#555;width:16px;height:16px;display:inline-block;margin:3px 6px 0 0;vertical-align:middle;border:1px solid #333;"></i> Buildings<br>
-        <i style="background:#1a9641;opacity:0.5;width:16px;height:16px;display:inline-block;margin:3px 6px 0 0;vertical-align:middle;border:1px solid #333;"></i> Scored Parcels (PID, by score)<br>
+        <i style="background:#2c7bb6;opacity:0.5;width:16px;height:16px;display:inline-block;margin:3px 6px 0 0;vertical-align:middle;border:1px solid #333;"></i> Scored Parcels (PID, by score)<br>
         <span style="color:#6B4226;">&#9473;&#9473;</span> Elevation Contours (50m)<br>
         <br>
         <span style="font-size: 11px; color: #666;">

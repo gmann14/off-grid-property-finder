@@ -312,3 +312,19 @@ FLOOD_SERVICE = (
     "OCN/OCN_Projected_Worst_Case_Flooding_2100_UT83/MapServer"
 )
 FLOOD_EXPORT_SIZE = 2048  # px per side over the study bbox (~24m at 50km)
+
+
+# --- Map score tiers ---------------------------------------------------------
+# One table for the map's layers, colours, opacity and legend, with edges at the
+# tiers the results README reports (>=80 / >=70 / >=60). Colours are ColorBrewer
+# RdYlBu (5-class), which stays distinguishable with red-green colour blindness
+# (the old red-to-green ramp did not). (floor, label, colour, fill opacity),
+# best first; a score belongs to the first tier whose floor it reaches.
+SCORE_TIERS = [
+    (80, "Excellent", "#2c7bb6", 0.75),
+    (70, "Very good", "#abd9e9", 0.60),
+    (60, "Good", "#ffffbf", 0.50),
+    (40, "Fair", "#fdae61", 0.40),
+    (0, "Poor", "#d7191c", 0.30),
+]
+NO_SCORE_COLOUR = "#808080"

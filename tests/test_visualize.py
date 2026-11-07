@@ -21,7 +21,7 @@ def _scored_cells():
     """A handful of cells spanning every score band + one excluded cell."""
     xmin, ymin, xmax, ymax = BBOX
     step = (xmax - xmin) / 6
-    scores = [95.0, 70.0, 50.0, 30.0, 10.0, None]  # excellent..unsuitable, excluded
+    scores = [95.0, 75.0, 65.0, 50.0, 10.0, None]  # one per tier (excellent..poor), excluded
     geoms = [box(xmin + i * step, ymin, xmin + (i + 1) * step, ymax) for i in range(6)]
     return gpd.GeoDataFrame(
         {
@@ -69,8 +69,8 @@ def test_run_visualize_minimal_produces_map(tmp_path):
     # also in the legend, which let a never-drawn excluded layer pass before.
     import re
     from src.visualize import EXCLUDED_LAYER_NAME
-    for band in ["Excellent (80-100)", "Good (60-79)", "Fair (40-59)",
-                 "Poor (20-39)", "Unsuitable (0-19)", EXCLUDED_LAYER_NAME]:
+    for band in ["Excellent (80-100)", "Very good (70-79)", "Good (60-69)",
+                 "Fair (40-59)", "Poor (0-39)", EXCLUDED_LAYER_NAME]:
         assert re.search(re.escape(f'"{band}"') + r"\s*:\s*geo_json_", html), band
 
 
@@ -227,3 +227,73 @@ def test_score_color_treats_nan_as_no_score():
 
     assert _score_color(float("nan")) == _score_color(None) == "#808080"
     assert _score_opacity(float("nan")) == _score_opacity(None)
+
+
+def _run_popup(js, props):
+    """Run the popup function in node against one feature; return the HTML."""
+    import json
+    import subprocess
+
+    script = (
+        "var html = null; var f = " + js + ";\n"
+        "var layer = {getBounds: function() { return {getCenter: function() { return {lat: 44.3, lng: -64.5}; }}; },"
+        " bindPopup: function(h) { html = h; }};\n"
+        "f({properties: " + json.dumps(props) + "}, layer); process.stdout.write(html);"
+    )
+    return subprocess.run(["node", "-e", script], capture_output=True, text=True, check=True).stdout
+
+
+@__import__("pytest").mark.skipif(__import__("shutil").which("node") is None, reason="needs node")
+def test_parcel_popup_explains_the_score_and_survives_missing_values(tmp_path):
+    from src.visualize import _parcel_popup_js
+
+    cfg, _ = _cfg(tmp_path)
+    cfg.preferences = {"parcel_aggregation": {"top_n": 3, "cell_weight": 0.65}}
+    js = _parcel_popup_js(cfg)
+    html = _run_popup(js, {
+        "PID": "60347168", "rank": 1, "score": 91.5, "cell_score": 97.8, "size_score": 80.0,
+        "top_hydro": 100.0, "top_access": 100.0, "top_open_ground": 85.0, "top_wind": 65.0,
+        "top_elevation": 100.0, "land_acres": 21.8, "area_acres": 21.8, "water_share": 0.0,
+        "n_cells": 1, "parcel_type": "developed", "n_buildings": 4, "severance_candidate": False,
+        "confidence": 100.0, "flags": "access_unverified"})
+    assert "PID 60347168" in html and "rank 1" in html
+    assert "65% &times; cell score (top 3 cells)" in html and "35% &times; land-acreage score" in html
+    assert "Micro-Hydro (40%)" in html and "<b>100</b>" in html
+    assert "21.8 / 21.8" in html and "access_unverified" in html
+    assert "maps?q=44.300000,-64.500000" in html and "Severance" not in html
+
+    sparse = _run_popup(js, {"PID": "<x>", "score": None, "water_share": None})
+    assert "PID &lt;x&gt;" in sparse          # escaped
+    assert "nan" not in sparse.lower() and "undefined" not in sparse
+    assert sparse.count("n/a") >= 5
+
+
+def test_parcel_layer_binds_the_popup(tmp_path):
+    import folium
+
+    from src.visualize import _add_parcels
+
+    path = tmp_path / "parcels.gpkg"
+    gpd.GeoDataFrame({"PID": ["1"], "score": [70.123456], "rank": [1], "top_hydro": [80.0]},
+                     geometry=[box(*BBOX)], crs=CRS).to_file(path, driver="GPKG")
+    m = folium.Map(location=[44.3, -64.5])
+    _add_parcels(m, path)
+    html = m.get_root().render()
+    assert "bindPopup" in html and "70.1" in html and "70.123456" not in html
+
+
+def test_tiers_match_the_results_readme_and_every_score_has_one_colour():
+    from src.constants import NO_SCORE_COLOUR, SCORE_TIERS
+    from src.visualize import _score_color, _tier_layers
+
+    assert [floor for floor, *_ in SCORE_TIERS][:3] == [80, 70, 60]   # results/README tiers
+    colours = {colour for _f, _l, colour, _o in SCORE_TIERS}
+    assert len(colours) == len(SCORE_TIERS) and NO_SCORE_COLOUR not in colours
+    edges = {80: "#2c7bb6", 79.999: "#abd9e9", 70: "#abd9e9", 69.9: "#ffffbf", 60: "#ffffbf",
+             59.9: "#fdae61", 40: "#fdae61", 39.9: "#d7191c", 0: "#d7191c", -1: "#d7191c", 100: "#2c7bb6"}
+    for score, colour in edges.items():
+        assert _score_color(score) == colour, score
+    # every score in 0..100 falls in exactly one layer
+    preds = [(lo, hi) for _n, lo, hi, _s in _tier_layers()]
+    for s in [x / 4 for x in range(0, 401)]:
+        assert sum((s >= lo or lo == 0) and (hi is None or s < hi) for lo, hi in preds) == 1, s
