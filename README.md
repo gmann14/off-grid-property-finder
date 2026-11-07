@@ -91,6 +91,7 @@ python -m src ingest-parcels    # Ingest NSPRD parcels with PID (add --from-rest
 python -m src prepare           # Full data preparation pipeline
 python -m src score             # Score, rank, and export results (+ ranked PIDs if parcels present)
 python -m src visualize         # Generate interactive Folium map
+python -m src snapshot          # Rebuild the committed results/ snapshot from output/ranked_parcels.csv
 python -m src analyze           # Print score distribution statistics
 ```
 

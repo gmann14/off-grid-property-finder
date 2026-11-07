@@ -111,6 +111,27 @@ def score(ctx: click.Context, limit: int | None) -> None:
 
 
 @cli.command()
+@click.option("--out", "out_dir", default="results", show_default=True,
+              help="Folder to write the snapshot CSVs to")
+@click.pass_context
+def snapshot(ctx: click.Context, out_dir: str) -> None:
+    """Rebuild the committed results/ snapshot from the last score run."""
+    from pathlib import Path
+
+    from src.snapshot import SnapshotError, build_snapshot
+
+    cfg = ctx.obj["config"]
+    logger = ctx.obj["logger"]
+    output = Path(cfg.paths.output)
+    try:
+        build_snapshot(output / "ranked_parcels.csv", Path(out_dir),
+                       scored_parcels=output / "scored_parcels.gpkg")
+    except SnapshotError as e:
+        logger.error(str(e))
+        raise SystemExit(1)
+
+
+@cli.command()
 @click.pass_context
 def visualize(ctx: click.Context) -> None:
     """Generate an interactive Folium map from scored output."""

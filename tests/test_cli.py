@@ -81,3 +81,22 @@ def test_cli_score_refuses_unrecorded_wind_with_exit_code_1(runner, tmp_path):
     (processed / "wind.tif").write_bytes(b"July 100 m file, no record")
     result = runner.invoke(cli, ["--config", str(_write_config(tmp_path)), "score"])
     assert result.exit_code == 1
+
+
+def test_cli_snapshot_fails_without_a_score_run(runner, tmp_path):
+    cfg = _write_config(tmp_path)
+    result = runner.invoke(cli, ["--config", str(cfg), "snapshot", "--out", str(tmp_path / "res")])
+    assert result.exit_code == 1
+    assert not (tmp_path / "res").exists()
+
+
+def test_cli_snapshot_writes_results(runner, tmp_path):
+    from tests.test_snapshot import _ranked
+
+    cfg = _write_config(tmp_path)
+    (tmp_path / "out").mkdir()
+    _ranked().to_csv(tmp_path / "out" / "ranked_parcels.csv", index=False)
+    result = runner.invoke(cli, ["--config", str(cfg), "snapshot", "--out", str(tmp_path / "res")])
+    assert result.exit_code == 0, result.output
+    assert sorted(p.name for p in (tmp_path / "res").iterdir()) == [
+        "ranked_pids.csv", "severance_candidates.csv", "top_land_only.csv"]

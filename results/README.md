@@ -90,4 +90,5 @@ See `../docs/seasonal-energy-balance.md` and `../DATA-SOURCES.md` (§3.3 for win
   27-acre lot whose two cells are 52% and 71% water). The grid can't see
   slivers.
 - **Not yet calibrated** against a known good/bad site — weights are reasoned.
-- Regenerate anytime: `python -m src score` → `output/ranked_parcels.csv`.
+- Regenerate anytime: `python -m src score` → `output/ranked_parcels.csv`, then
+  `python -m src snapshot` rebuilds this folder from it.
