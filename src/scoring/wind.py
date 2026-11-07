@@ -15,18 +15,12 @@ import numpy as np
 import pandas as pd
 
 from src.config import Config
-from src.constants import EXPOSURE_TPI_THRESHOLDS, WIND_SPEED_THRESHOLDS
+from src.constants import EXPOSURE_TPI_THRESHOLDS, WIND_NO_DATA_SCORE, WIND_SPEED_THRESHOLDS
+from src.scoring.bands import band_score
 from src.scoring.registry import register
 from src.zonal import grid_zonal_stats
 
 logger = logging.getLogger("property_finder")
-
-
-def _lookup_score(value: float, thresholds: list[tuple]) -> int:
-    for low, high, score in thresholds:
-        if low <= value < high:
-            return score
-    return 0
 
 
 def wind_uses_proxy(config: Config) -> bool:
@@ -42,7 +36,13 @@ def score_wind(candidates: gpd.GeoDataFrame, config: Config) -> pd.Series:
 
     if wind_path.exists():
         means = grid_zonal_stats(candidates.geometry, wind_path, stats=("mean",))["mean"]
-        scores = [_lookup_score(0.0 if np.isnan(m) else m, WIND_SPEED_THRESHOLDS) for m in means]
+        # A cell the raster doesn't cover has an unknown wind, not a calm one.
+        scores = [WIND_NO_DATA_SCORE if np.isnan(m) else band_score(m, WIND_SPEED_THRESHOLDS)
+                  for m in means]
+        n_missing = int(np.isnan(np.asarray(means, dtype=float)).sum())
+        if n_missing:
+            logger.warning("Wind: %d cell(s) have no wind-raster value; scored a neutral %d, "
+                           "not as calm", n_missing, WIND_NO_DATA_SCORE)
         logger.info("Wind: scored from Global Wind Atlas speed at %.0fm hub height",
                     config.wind.hub_height_m)
         return pd.Series(scores, index=candidates.index, dtype=float)
@@ -50,7 +50,8 @@ def score_wind(candidates: gpd.GeoDataFrame, config: Config) -> pd.Series:
     if exposure_path.exists():
         means = grid_zonal_stats(candidates.geometry, exposure_path, stats=("mean",), nodata=-9999)["mean"]
         # No exposure coverage → treat as flat/neutral rather than penalize.
-        scores = [40 if np.isnan(m) else _lookup_score(m, EXPOSURE_TPI_THRESHOLDS) for m in means]
+        scores = [WIND_NO_DATA_SCORE if np.isnan(m) else band_score(m, EXPOSURE_TPI_THRESHOLDS)
+                  for m in means]
         logger.info("Wind: no wind raster; scored from terrain exposure (TPI) proxy")
         return pd.Series(scores, index=candidates.index, dtype=float)
 

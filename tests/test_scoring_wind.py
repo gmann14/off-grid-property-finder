@@ -6,8 +6,9 @@ import rasterio
 from rasterio.transform import from_bounds
 
 from src.config import Config, Paths, StudyArea
-from src.constants import EXPOSURE_TPI_THRESHOLDS, WIND_NODATA, WIND_SPEED_THRESHOLDS
-from src.scoring.wind import _lookup_score, score_wind, wind_uses_proxy
+from src.constants import EXPOSURE_TPI_THRESHOLDS, WIND_NO_DATA_SCORE, WIND_NODATA, WIND_SPEED_THRESHOLDS
+from src.scoring.bands import band_score
+from src.scoring.wind import score_wind, wind_uses_proxy
 
 CRS = "EPSG:2961"
 BBOX = (380000.0, 4900000.0, 381000.0, 4901000.0)
@@ -31,10 +32,10 @@ def _cfg(tmp_path):
 
 
 def test_lookup_speed_and_tpi():
-    assert _lookup_score(9.0, WIND_SPEED_THRESHOLDS) == 100
-    assert _lookup_score(20.0, EXPOSURE_TPI_THRESHOLDS) == 100   # strong ridge
-    assert _lookup_score(0.0, EXPOSURE_TPI_THRESHOLDS) == 40     # flat/neutral
-    assert _lookup_score(-10.0, EXPOSURE_TPI_THRESHOLDS) == 15   # valley
+    assert band_score(9.0, WIND_SPEED_THRESHOLDS) == 100
+    assert band_score(20.0, EXPOSURE_TPI_THRESHOLDS) == 100   # strong ridge
+    assert band_score(0.0, EXPOSURE_TPI_THRESHOLDS) == 40     # flat/neutral
+    assert band_score(-10.0, EXPOSURE_TPI_THRESHOLDS) == 15   # valley
 
 
 @pytest.mark.parametrize("speed, expected", [
@@ -47,10 +48,11 @@ def test_lookup_speed_and_tpi():
     (4.49, 40),
     (4.0, 40),
     (3.99, 15),   # below the usual ~4 m/s small-turbine floor
-    (0.0, 15),    # nodata cells are scored as 0.0 m/s -> lowest band
+    (0.0, 15),
+    (float("inf"), 100),   # the open-ended top band takes +inf too
 ])
 def test_small_turbine_speed_bands(speed, expected):
-    assert _lookup_score(speed, WIND_SPEED_THRESHOLDS) == expected
+    assert band_score(speed, WIND_SPEED_THRESHOLDS) == expected
 
 
 def test_speed_bands_are_contiguous_and_cover_zero_up():
@@ -70,12 +72,23 @@ def test_wind_prefers_wind_raster(tmp_path, small_grid):
     assert (scores == 85).all()  # used wind raster, not exposure
 
 
-def test_wind_raster_nodata_cells_score_lowest_band(tmp_path, small_grid):
-    # A cell entirely over wind.tif nodata has no wind estimate -> 0 m/s -> 15,
-    # and the nodata sentinel must never be averaged in as a real speed.
+def test_wind_raster_nodata_cells_score_neutral_with_a_warning(tmp_path, small_grid, caplog):
+    # A cell entirely over wind.tif nodata has no wind estimate: it scores the
+    # neutral WIND_NO_DATA_SCORE (as the exposure proxy does), not the calm
+    # band's 15, the run says how many cells that was, and the nodata
+    # sentinel is never averaged in as a real speed.
     _write_const(tmp_path / "wind.tif", WIND_NODATA, nodata=WIND_NODATA)
-    scores = score_wind(small_grid, _cfg(tmp_path))
-    assert (scores == 15).all()
+    with caplog.at_level("WARNING", logger="property_finder"):
+        scores = score_wind(small_grid, _cfg(tmp_path))
+    assert (scores == WIND_NO_DATA_SCORE).all()
+    assert f"{len(small_grid)} cell(s) have no wind-raster value" in caplog.text
+
+
+def test_wind_raster_with_full_coverage_does_not_warn(tmp_path, small_grid, caplog):
+    _write_const(tmp_path / "wind.tif", 5.5, nodata=WIND_NODATA)
+    with caplog.at_level("WARNING", logger="property_finder"):
+        score_wind(small_grid, _cfg(tmp_path))
+    assert "no wind-raster value" not in caplog.text
 
 
 def test_wind_falls_back_to_exposure(tmp_path, small_grid):

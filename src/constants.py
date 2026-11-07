@@ -111,6 +111,9 @@ WIND_SPEED_THRESHOLDS = [
     (4.0, 4.5, 40),
     (0, 4.0, 15),
 ]
+# Wind score for a cell with no wind (or exposure) value: neutral, like a
+# marginal 4.0-4.5 m/s site, rather than the calm band's 15.
+WIND_NO_DATA_SCORE = 40
 # Small off-grid turbines (1–10 kW) sit on ~18–37 m towers; in NS forest
 # (trees ~20 m) a 30 m hub clears the canopy by the usual ~10 m. Overridable
 # via `wind.hub_height_m` in config.yaml.
