@@ -96,6 +96,20 @@ def test_sea_level_is_excluded(tmp_path):
     assert frac == pytest.approx(0.5, abs=0.02)
 
 
+def test_dem_nodata_is_not_buildable(tmp_path):
+    """Regression: a DEM nodata hole passed the slope rule (slope 0 from the
+    old gradient) and was skipped by the sea-level rule, so it was buildable."""
+    slope = _write_flat_slope(tmp_path / "slope.tif")
+    dem = _write_dem(tmp_path / "dem.tif", west_elev=-32767, east_elev=40.0)  # west = no data
+    for sea_level in (0.0, None):
+        build_buildability_mask(slope, None, None, None, BBOX, CRS,
+                                dem_path=dem, sea_level_m=sea_level)
+        with rasterio.open(tmp_path / "buildability_mask.tif") as s:
+            a = s.read(1)
+        assert (a[:, :50] == 0).all()
+        assert (a[:, 50:] == 1).all()
+
+
 def test_buildings_are_excluded(tmp_path):
     slope = _write_flat_slope(tmp_path / "slope.tif")
     xmin, ymin, xmax, ymax = BBOX

@@ -183,7 +183,7 @@ def build_buildability_mask(
 ) -> Path | None:
     """Build a raster mask where 1 = buildable (open ground), 0 = constrained.
 
-    Constraints applied: steep slope (and slope-nodata), at/below-sea-level land
+    Constraints applied: steep slope (and slope-nodata), DEM nodata, at/below-sea-level land
     (ocean/coast proxy from the DEM), watercourses + waterbody polygons
     (buffered), forest/treed area, and existing buildings (buffered). This is
     the fix for the prior version, which applied only the slope rule and so
@@ -223,21 +223,28 @@ def build_buildability_mask(
     buildable = buildable.astype(np.uint8)
     n_slope_ok = int(buildable.sum())
 
-    # Sea-level / ocean exclusion from the DEM (cheap coastline proxy)
+    # DEM nodata (no terrain known) and sea-level / ocean pixels (cheap
+    # coastline proxy) are not buildable
     n_sea = 0
-    if dem_path is not None and Path(dem_path).exists() and sea_level_m is not None:
+    n_dem_nodata = 0
+    if dem_path is not None and Path(dem_path).exists():
         with rasterio.open(dem_path) as dsrc:
             dem = dsrc.read(1)
             dnd = dsrc.nodata
         if dem.shape == shape:
-            sea = dem <= sea_level_m
-            if dnd is not None:
-                sea &= dem != dnd
-            sea &= buildable == 1
-            n_sea = int(sea.sum())
-            buildable[sea] = 0
+            no_dem = ~np.isfinite(dem)
+            if dnd is not None and not np.isnan(dnd):
+                no_dem |= dem == dnd
+            newly = no_dem & (buildable == 1)
+            n_dem_nodata = int(newly.sum())
+            buildable[newly] = 0
+            if sea_level_m is not None:
+                sea = (dem <= sea_level_m) & ~no_dem & (buildable == 1)
+                n_sea = int(sea.sum())
+                buildable[sea] = 0
         else:
-            logger.warning("DEM shape %s != slope shape %s; skipping sea-level mask", dem.shape, shape)
+            logger.warning("DEM shape %s != slope shape %s; skipping DEM nodata and "
+                           "sea-level masks", dem.shape, shape)
 
     # Watercourses + waterbody polygons → not buildable
     n_water = _burn_constraint(
@@ -273,8 +280,8 @@ def build_buildability_mask(
 
     frac = buildable.mean() * 100
     logger.info(
-        "Built buildability mask: %s (slope-ok=%d, -sea=%d, -water=%d, -forest=%d, "
-        "-buildings=%d; %.1f%% open/buildable)",
-        mask_path, n_slope_ok, n_sea, n_water, n_forest, n_bldg, frac,
+        "Built buildability mask: %s (slope-ok=%d, -dem-nodata=%d, -sea=%d, -water=%d, "
+        "-forest=%d, -buildings=%d; %.1f%% open/buildable)",
+        mask_path, n_slope_ok, n_dem_nodata, n_sea, n_water, n_forest, n_bldg, frac,
     )
     return mask_path

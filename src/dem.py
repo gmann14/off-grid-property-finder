@@ -22,22 +22,52 @@ def _compress_raster(path: Path, target_dtype: str | None = None) -> None:
         dst.write(data.astype(dtype))
 
 
+DERIVATIVE_NODATA = -9999.0
+
+
+def _read_dem_nan(dem_path: Path):
+    """Read band 1 as float64 with nodata (and non-finite values) set to NaN.
+
+    Returns (dem, res_x, res_y, meta).
+    """
+    with rasterio.open(dem_path) as src:
+        dem = src.read(1).astype(np.float64)
+        res_x, res_y = src.res
+        meta = src.meta.copy()
+        nodata = src.nodata
+    if nodata is not None and not np.isnan(nodata):
+        dem[dem == nodata] = np.nan
+    dem[~np.isfinite(dem)] = np.nan
+    return dem, res_x, res_y, meta
+
+
+def _dem_gradients(dem: np.ndarray, res_x: float, res_y: float):
+    """np.gradient of a NaN-holed DEM -> (dx, dy, valid).
+
+    A central difference at a pixel uses its two neighbours, not the pixel
+    itself, so a pixel is valid only if it has data AND both gradients are
+    finite: nodata pixels and the ring next to them come out invalid instead
+    of slope 0 inside the hole and a cliff (~90 deg) across the sentinel at
+    its edge.
+    """
+    dy, dx = np.gradient(dem, res_y, res_x)
+    valid = np.isfinite(dem) & np.isfinite(dx) & np.isfinite(dy)
+    return dx, dy, valid
+
+
 def generate_slope(dem_path: Path, out_path: Path) -> Path:
     if out_path.exists():
         logger.debug("Slope raster exists, skipping: %s", out_path)
         return out_path
 
-    with rasterio.open(dem_path) as src:
-        dem = src.read(1).astype(np.float64)
-        res_x, res_y = src.res
-        meta = src.meta.copy()
+    dem, res_x, res_y, meta = _read_dem_nan(dem_path)
 
     # Gradient-based slope in degrees
-    dy, dx = np.gradient(dem, res_y, res_x)
-    slope_rad = np.arctan(np.sqrt(dx**2 + dy**2))
-    slope_deg = np.degrees(slope_rad)
+    dx, dy, valid = _dem_gradients(dem, res_x, res_y)
+    slope_deg = np.degrees(np.arctan(np.sqrt(dx**2 + dy**2)))
+    slope_deg = np.where(valid, slope_deg, DERIVATIVE_NODATA)
 
-    meta.update(dtype="float32", nodata=-9999, compress="lzw")
+    meta.update(dtype="float32", nodata=DERIVATIVE_NODATA, compress="lzw")
     out_path.parent.mkdir(parents=True, exist_ok=True)
     with rasterio.open(out_path, "w", **meta) as dst:
         dst.write(slope_deg.astype(np.float32), 1)
@@ -51,20 +81,18 @@ def generate_aspect(dem_path: Path, out_path: Path) -> Path:
         logger.debug("Aspect raster exists, skipping: %s", out_path)
         return out_path
 
-    with rasterio.open(dem_path) as src:
-        dem = src.read(1).astype(np.float64)
-        res_x, res_y = src.res
-        meta = src.meta.copy()
+    dem, res_x, res_y, meta = _read_dem_nan(dem_path)
 
-    dy, dx = np.gradient(dem, res_y, res_x)
+    dx, dy, valid = _dem_gradients(dem, res_x, res_y)
     # Aspect: clockwise from north (0-360)
     aspect = np.degrees(np.arctan2(-dx, dy))
     aspect = np.where(aspect < 0, aspect + 360, aspect)
     # Flat areas (no slope) get aspect = -1
     flat_mask = (np.abs(dx) < 1e-10) & (np.abs(dy) < 1e-10)
     aspect = np.where(flat_mask, -1, aspect)
+    aspect = np.where(valid, aspect, DERIVATIVE_NODATA)
 
-    meta.update(dtype="float32", nodata=-9999, compress="lzw")
+    meta.update(dtype="float32", nodata=DERIVATIVE_NODATA, compress="lzw")
     out_path.parent.mkdir(parents=True, exist_ok=True)
     with rasterio.open(out_path, "w", **meta) as dst:
         dst.write(aspect.astype(np.float32), 1)
