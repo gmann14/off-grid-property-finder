@@ -977,6 +977,19 @@ def _mask_to_polygons(mask, transform, working_crs: str) -> gpd.GeoDataFrame:
     return gdf.dissolve().explode(index_parts=False).reset_index(drop=True)
 
 
+def _export_image_size(bbox: tuple, size: int) -> tuple[int, int]:
+    """Image (width, height) in px for a MapServer export of ``bbox``: the
+    longer side gets ``size`` px and the shorter side the same pixel size.
+    ArcGIS widens an export's extent to the image's aspect ratio, so an image
+    that doesn't match the bbox would cover more ground than the bbox the
+    result is georeferenced to. A square bbox gets ``size`` x ``size``."""
+    xmin, ymin, xmax, ymax = bbox
+    width, height = xmax - xmin, ymax - ymin
+    if width >= height:
+        return size, max(1, round(size * height / width))
+    return max(1, round(size * width / height)), size
+
+
 def fetch_flood_polygons(
     bbox_working: tuple, service_url: str | None = None, size: int | None = None,
     timeout: int = 120, working_crs: str = WORKING_CRS,
@@ -1007,9 +1020,10 @@ def fetch_flood_polygons(
     size = size or FLOOD_EXPORT_SIZE
     epsg = working_crs.split(":")[1]
     xmin, ymin, xmax, ymax = bbox_working
+    img_w, img_h = _export_image_size(bbox_working, size)
     params = {
         "bbox": f"{xmin},{ymin},{xmax},{ymax}", "bboxSR": epsg, "imageSR": epsg,
-        "size": f"{size},{size}", "format": "png", "transparent": "true", "f": "image",
+        "size": f"{img_w},{img_h}", "format": "png", "transparent": "true", "f": "image",
     }
     try:
         resp = requests.get(base, params=params, timeout=timeout)

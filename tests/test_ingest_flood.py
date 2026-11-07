@@ -74,6 +74,51 @@ def test_fetch_flood_none_on_network_failure():
     assert result is None
 
 
+# --- export size follows the bbox aspect ratio -------------------------------
+
+def _aspect_widening_server(flood_rect):
+    """A mocked MapServer export that, like ArcGIS, widens the requested
+    extent to the image's aspect ratio before rendering, and draws
+    ``flood_rect`` (world coordinates) as opaque pixels."""
+    def get(url, params=None, timeout=None):
+        w, h = (int(v) for v in params["size"].split(","))
+        xmin, ymin, xmax, ymax = (float(v) for v in params["bbox"].split(","))
+        cx, cy, bw, bh = (xmin + xmax) / 2, (ymin + ymax) / 2, xmax - xmin, ymax - ymin
+        if bw / bh < w / h:
+            bw = bh * w / h
+        else:
+            bh = bw * h / w
+        x0, y1 = cx - bw / 2, cy + bh / 2
+        xs = x0 + (np.arange(w) + 0.5) * bw / w
+        ys = y1 - (np.arange(h) + 0.5) * bh / h
+        fx0, fy0, fx1, fy1 = flood_rect
+        inside = ((ys[:, None] >= fy0) & (ys[:, None] <= fy1)
+                  & (xs[None, :] >= fx0) & (xs[None, :] <= fx1))
+        return _mock_ok_response(_png_bytes(w, h, alpha=np.where(inside, 255, 0)))
+    return get
+
+
+def test_fetch_flood_requests_image_with_bbox_aspect_ratio():
+    """For a non-square bbox, a square image made ArcGIS widen the extent, and
+    georeferencing the result to the requested bbox put the polygons in the
+    wrong place."""
+    bbox = (380000.0, 4900000.0, 382000.0, 4901000.0)   # 2 km x 1 km
+    flood = (380500.0, 4900200.0, 380900.0, 4900600.0)
+    with patch("requests.get", side_effect=_aspect_widening_server(flood)) as mock_get:
+        result = fetch_flood_polygons(bbox, size=200, working_crs=CRS)
+    assert mock_get.call_args.kwargs["params"]["size"] == "200,100"
+    px = 2000 / 200
+    np.testing.assert_allclose(result.total_bounds, flood, atol=px)
+
+
+def test_fetch_flood_square_bbox_request_unchanged():
+    from src.constants import FLOOD_EXPORT_SIZE
+
+    with patch("requests.get", return_value=_mock_ok_response(_png_bytes(10, 10, alpha=0))) as mock_get:
+        fetch_flood_polygons((360000, 4880000, 410000, 4930000), working_crs=CRS)
+    assert mock_get.call_args.kwargs["params"]["size"] == f"{FLOOD_EXPORT_SIZE},{FLOOD_EXPORT_SIZE}"
+
+
 # --- ingest_flood: cache the empty sentinel, but never cache a failure ------
 
 def _flood_config(tmp_path):
