@@ -24,5 +24,6 @@ Public-safe source of truth for project work. Keep private locations, credential
 - [x] The parcel size score and the 40-acre severance rule use land acres (`land_acres`: the parcel's acreage less any lake, river or sea in it) instead of the whole mapped area, so water lots and lakefront lots no longer rank as big parcels; `land_acres` is exported next to `area_acres` (branch `wind-hub-30m`, 2026-11-06).
 - [x] Reviewed the `wind-hub-30m` before/after numbers (30 m hub wind, water cells excluded, land acres) and merged the branch into `main` (fast-forward) and pushed, 2026-11-07.
 - [x] `min_parcel_area_acres` (SPEC §2.1 Stage B hard exclusion) now works: parcels with less land than it (default 1 acre) get no score or rank and are flagged `parcel_below_min_area`. 394 parcels drop out of the ranking, none in the top 1,000 (2026-11-07).
+- [x] Exported rankings break score ties by PID, so a tied parcel's place no longer depends on unrelated rows (7,135 of 8,085 ranked parcels share a rank; ranks, scores and every top-N set unchanged, only the order inside ties) (2026-11-07).
 
 - [x] Created public-safe task source of truth.

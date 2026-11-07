@@ -57,7 +57,7 @@ def export_results(candidates: gpd.GeoDataFrame, output_dir: Path) -> None:
     # Eligible-only ranked view
     eligible = candidates[candidates.get("status") != "excluded"].copy()
     if not eligible.empty:
-        eligible_sorted = eligible.sort_values("rank")
+        eligible_sorted = eligible.sort_values("rank", kind="stable")  # ties keep grid order
         eligible_csv = eligible_sorted[[c for c in csv_cols if c in eligible_sorted.columns]].copy()
         try:
             eligible_centroids = eligible_sorted.geometry.centroid.to_crs("EPSG:4326")
@@ -93,9 +93,13 @@ def export_ranked_parcels(parcels: gpd.GeoDataFrame, output_dir: Path) -> None:
         logger.warning("No scored parcels to rank; skipping ranked_parcels.csv")
         return
 
+    # Ties are ordered by PID, so which tied parcels make a "top N" cut depends
+    # only on them, not on unrelated rows elsewhere in the list (a default
+    # quicksort reorders ties whenever any other row is added or removed).
     sort_col = "rank" if "rank" in scored.columns else "score"
-    ascending = sort_col == "rank"
-    scored = scored.sort_values(sort_col, ascending=ascending)
+    keys = [sort_col] + (["PID"] if "PID" in scored.columns else [])
+    scored = scored.sort_values(keys, ascending=[sort_col == "rank"] + [True] * (len(keys) - 1),
+                                kind="stable")
 
     cols = [c for c in PARCEL_CSV_COLUMNS if c in scored.columns]
     csv_df = scored[cols].copy()

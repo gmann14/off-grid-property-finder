@@ -88,3 +88,31 @@ def test_export_empty_geodataframe(tmp_path):
     # Should not raise
     export_results(candidates, tmp_path)
     assert (tmp_path / "scored_cells.csv").exists()
+
+
+def _tied_parcels(pids):
+    return gpd.GeoDataFrame(
+        {"PID": pids, "score": [70.0] * len(pids), "rank": [1] * len(pids)},
+        geometry=[box(380000 + 250 * i, 4900000, 380250 + 250 * i, 4900250) for i in range(len(pids))],
+        crs="EPSG:2961",
+    )
+
+
+def test_tied_parcels_are_ordered_by_pid(tmp_path):
+    """Tied parcels come out in PID order whatever order they arrive in."""
+    export_ranked_parcels(_tied_parcels(["60000009", "60000001", "60000005"]), tmp_path)
+    csv = pd.read_csv(tmp_path / "ranked_parcels.csv", dtype={"PID": str})
+    assert csv["PID"].tolist() == ["60000001", "60000005", "60000009"]
+
+
+def test_tie_order_does_not_depend_on_other_rows(tmp_path):
+    """Adding or removing an unrelated, lower-ranked parcel must not reorder a tie
+    (it did with the default quicksort, so a top-N cut at a tie could change)."""
+    pids = [f"6{i:07d}" for i in range(40, 0, -1)]
+    tied = _tied_parcels(pids)
+    extra = _tied_parcels(["69999999"]).assign(score=10.0, rank=41)
+    export_ranked_parcels(tied, tmp_path / "a")
+    export_ranked_parcels(pd.concat([extra, tied], ignore_index=True), tmp_path / "b")
+    a = pd.read_csv(tmp_path / "a" / "ranked_parcels.csv", dtype={"PID": str})
+    b = pd.read_csv(tmp_path / "b" / "ranked_parcels.csv", dtype={"PID": str})
+    assert b["PID"].head(40).tolist() == a["PID"].tolist() == sorted(pids)
