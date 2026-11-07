@@ -143,3 +143,21 @@ def test_invalid_wind_settings_raise_clearly(tmp_path, wind, message):
     with pytest.raises(ValueError, match=message):
         _load(tmp_path, {"study_area": {"bbox": [1, 2, 3, 4]}, "wind": wind})
 
+
+
+def _write(tmp_path, **extra):
+    config_file = tmp_path / "config.yaml"
+    config_file.write_text(yaml.dump({"study_area": {"bbox": [1, 2, 3, 4]}, **extra}))
+    return config_file
+
+
+def test_min_parcel_area_defaults_to_one_acre_and_reads_from_yaml(tmp_path):
+    assert load_config(_write(tmp_path)).min_parcel_area_acres == 1.0
+    assert load_config(_write(tmp_path, min_parcel_area_acres=2.5)).min_parcel_area_acres == 2.5
+    assert load_config(_write(tmp_path, min_parcel_area_acres=0)).min_parcel_area_acres == 0.0
+
+
+@pytest.mark.parametrize("bad", [-1, "1", True, None, float("nan"), float("inf"), [1]])
+def test_invalid_min_parcel_area_raises_clearly(tmp_path, bad):
+    with pytest.raises(ValueError, match="min_parcel_area_acres"):
+        load_config(_write(tmp_path, min_parcel_area_acres=bad))

@@ -62,7 +62,7 @@ wind:
 exclusion_overlap_threshold: 0.5  # 50% overlap triggers hard exclusion
 
 # Parcel settings (Stage B)
-min_parcel_area_acres: 1.0
+min_parcel_area_acres: 1.0  # parcels with less land than this are left unranked (0 = off)
 
 # Optional preference criteria
 # parcel_aggregation: tune how cell scores roll up to parcels (Stage B)

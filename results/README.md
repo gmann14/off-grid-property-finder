@@ -5,9 +5,9 @@ lookup-ready record. (The live pipeline writes to `output/`, which is gitignored
 and regenerates on each `score` run — this folder is the saved copy.)
 
 **Generated:** 2026-11-06 · **Study area:** Lunenburg / South Shore NS bbox
-(EPSG:2961 `[360000, 4880000, 410000, 4930000]`) · **Parcels scored:** 8,479.
+(EPSG:2961 `[360000, 4880000, 410000, 4930000]`) · **Parcels scored:** 8,085.
 
-*(Updated from the 2026-07-02 snapshot in three steps.*
+*(Updated from the 2026-07-02 snapshot in four steps.*
 
 *1. Wind is now scored as the estimated mean speed at a 30 m small-turbine
 hub height, extrapolated down from the Global Wind Atlas 50 m and 100 m
@@ -30,6 +30,10 @@ whole mapped area, so a water lot or a lakefront lot drawn out into the lake
 no longer scores as a big parcel. 299 parcels drop a size band; none of the
 34 parcels that are at least half water stays in the top 200.*
 
+*4. Parcels with less than 1 acre of land are left unranked, as the spec
+always intended (the setting existed but did nothing). 394 parcels drop out,
+none of them in the top 1,000; every other score is unchanged.*
+
 *Against July, 44 of the old top 50 remain in the top 50, rank correlation
 0.98. The 2026-07-02 version is in git history at commit `80405ca`. Earlier,
 the 2026-07-02 update had dissolved parcels by PID: one row per PID, no
@@ -39,7 +43,7 @@ fragments.)*
 
 | File | What it is |
 |------|------------|
-| `ranked_pids.csv` | All 8,479 parcels, **ranked best-first**, keyed by **PID** (one row per PID — no fragments). Columns: rank, PID, score, cell_score, n_cells, area_acres, land_acres, water_share, parcel_type, n_buildings, severance_candidate, lat/lon, Maps link. `area_acres` is the whole mapped area; `land_acres` (new) is that less any lake, river or sea in the parcel, and `water_share` (new) is the share that is water. The score and severance rule use `land_acres`. |
+| `ranked_pids.csv` | All 8,085 parcels, **ranked best-first**, keyed by **PID** (one row per PID — no fragments). Columns: rank, PID, score, cell_score, n_cells, area_acres, land_acres, water_share, parcel_type, n_buildings, severance_candidate, lat/lon, Maps link. `area_acres` is the whole mapped area; `land_acres` (new) is that less any lake, river or sea in the parcel, and `water_share` (new) is the share that is water. The score and severance rule use `land_acres`. |
 | `top_land_only.csv` | Top 50 **vacant** parcels (buy outright). |
 | `severance_candidates.csv` | 58 developed/built parcels with ≥40 acres of land and strong scores — owner-outreach (split-off-land) targets. (Was 86: 23 sat just above the cell-score ≥50 cut-off and dropped below it when inland cells lost wind points; 4 others, three of them on the coast, rose above it; 6 more dropped out once water cells stopped counting, and 3 once their land, not their whole mapped area, had to reach 40 acres.) |
 

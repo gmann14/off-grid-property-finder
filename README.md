@@ -68,6 +68,7 @@ Cells are excluded (`score = null`) when:
 - Water (`data/processed/waterbodies.gpkg`: lakes, rivers and the sea) counts by overlap only, so a pond or lake edge over a mostly-land cell's centroid doesn't exclude it. The layer is optional and skipped if missing.
 - Parcels get cells by centroid containment, except that a mostly-land shore cell whose centroid is in water goes to the parcel holding most of its land, not to a water lot.
 - A parcel's size score and the 40-acre severance rule use its land acres (`land_acres`): its acreage less any of that water inside it, so a water lot or a lakefront lot drawn out into the lake doesn't rank as a big parcel. `area_acres` (the whole mapped area) is still exported next to it.
+- A parcel with less land than `min_parcel_area_acres` (default 1 acre) gets no score or rank and is flagged `parcel_below_min_area` (SPEC §2.1).
 
 Excluded cells are still emitted in output with `status = excluded` and explicit `exclusion_reasons`.
 

@@ -123,6 +123,13 @@ class Config:
         return {k: v / total * 100 for k, v in raw.items()}
 
 
+def _min_parcel_area(value: object) -> float:
+    """``min_parcel_area_acres``: a finite number >= 0 (0 turns the minimum off)."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or value < 0:
+        raise ValueError(f"min_parcel_area_acres must be a number >= 0 (acres of land), got {value!r}")
+    return float(value)
+
+
 def load_config(path: str | Path = "config.yaml") -> Config:
     path = Path(path)
     if not path.exists():
@@ -166,7 +173,7 @@ def load_config(path: str | Path = "config.yaml") -> Config:
             "confidence_deductions", dict(CONFIDENCE_DEDUCTIONS)
         ),
         exclusion_overlap_threshold=raw.get("exclusion_overlap_threshold", 0.5),
-        min_parcel_area_acres=raw.get("min_parcel_area_acres", 1.0),
+        min_parcel_area_acres=_min_parcel_area(raw.get("min_parcel_area_acres", 1.0)),
         preferences=raw.get("preferences", {}),
         wind=wind,
     )

@@ -8,6 +8,7 @@ import pandas as pd
 
 from src.config import Config
 from src.constants import (
+    FLAG_PARCEL_BELOW_MIN_AREA,
     FLAG_PARCEL_NO_CANDIDATES,
     FLAG_SEVERANCE_CANDIDATE,
     PARCEL_CELL_WEIGHT,
@@ -59,6 +60,7 @@ def aggregate_to_parcels(
     top_n: int = PARCEL_TOP_N_CELLS,
     cell_weight: float = PARCEL_CELL_WEIGHT,
     assign_points: gpd.GeoSeries | None = None,
+    min_area_acres: float = 0.0,
 ) -> gpd.GeoDataFrame:
     """Aggregate cell scores to parcels (Stage B).
 
@@ -74,6 +76,11 @@ def aggregate_to_parcels(
     (``PID``, ``AAN``) pass through untouched so the ranked output is keyed by
     real property identifiers. Adds ``n_cells``, ``rank`` (over scored parcels),
     and a ``flags`` column marking parcels with no assigned candidates.
+
+    A parcel with less than ``min_area_acres`` of land (``config.yaml``
+    ``min_parcel_area_acres``; the SPEC's Stage B hard exclusion) keeps its
+    ``cell_score`` but gets no score or rank, and is flagged
+    ``parcel_below_min_area``.
     """
     # reset_index so the sjoin index_right -> parcels.index.map alignment can't
     # be corrupted by a duplicate/non-default parcel index.
@@ -115,19 +122,26 @@ def aggregate_to_parcels(
         + (1 - cell_weight) * parcels["size_score"]
     )
     no_candidates = parcels["cell_score"].isna()
-    parcels.loc[no_candidates, "score"] = None
+    # NaN acreage (no geometry) compares False, so it isn't excluded here
+    below_min = _scoring_acres(parcels) < min_area_acres
+    parcels.loc[no_candidates | below_min, "score"] = None
 
-    # Rank scored parcels (best = 1), and flag empty ones
+    # Rank scored parcels (best = 1), and flag the unscored ones
     parcels["rank"] = (
         parcels["score"].rank(ascending=False, method="min").astype("Int64")
     )
-    parcels["flags"] = ""
-    parcels.loc[no_candidates, "flags"] = FLAG_PARCEL_NO_CANDIDATES
+    flags = pd.Series([[] for _ in range(len(parcels))], index=parcels.index)
+    for mask, flag in ((no_candidates, FLAG_PARCEL_NO_CANDIDATES),
+                       (below_min, FLAG_PARCEL_BELOW_MIN_AREA)):
+        for i in parcels.index[mask]:
+            flags[i].append(flag)
+    parcels["flags"] = flags.map("; ".join)
 
     assigned = int((~no_candidates).sum())
     logger.info(
-        "Parcel aggregation: %d of %d parcels have assigned cells",
-        assigned, len(parcels),
+        "Parcel aggregation: %d of %d parcels have assigned cells; %d of those "
+        "have under %.2f acres of land and are left unranked",
+        assigned, len(parcels), int((~no_candidates & below_min).sum()), min_area_acres,
     )
     return parcels
 

@@ -202,6 +202,7 @@ FLAG_COASTAL_LOW_ELEVATION = "coastal_low_elevation"
 FLAG_HYDRO_LOW_CONFIDENCE = "hydro_low_confidence"
 FLAG_SOLAR_LOW_CONFIDENCE = "solar_low_confidence"
 FLAG_PARCEL_NO_CANDIDATES = "parcel_no_assigned_candidates"
+FLAG_PARCEL_BELOW_MIN_AREA = "parcel_below_min_area"  # under min_parcel_area_acres of land
 FLAG_WIND_PROXY_ONLY = "wind_exposure_proxy_only"  # no wind raster; TPI used
 FLAG_WIND_WORTH_IT = "wind_worth_it"  # good wind + limited solar room
 

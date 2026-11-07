@@ -112,6 +112,7 @@ def run_score(config: Config, logger: logging.Logger, limit: int | None = None) 
             parcels,
             top_n=agg.get("top_n", PARCEL_TOP_N_CELLS),
             cell_weight=agg.get("cell_weight", PARCEL_CELL_WEIGHT),
+            min_area_acres=config.min_parcel_area_acres,
             # shore cells whose centre is just offshore go to the parcel
             # holding their land, not to a water lot
             assign_points=parcel_assignment_points(

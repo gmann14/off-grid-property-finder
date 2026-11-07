@@ -205,3 +205,48 @@ def test_aggregate_uses_assignment_points_for_shore_cells(tmp_path):
         cells, parcels, assign_points=parcel_assignment_points(cells, exclusions)).set_index("PID")
     assert by_land.loc["water_lot", "n_cells"] == 0 and pd.isna(by_land.loc["water_lot", "score"])
     assert by_land.loc[["west_land", "east_land"], "n_cells"].sum() == 1
+
+
+def _three_parcels_with_cells():
+    """Parcels A (2 acres of land), B (3 mapped acres, 0.8 of them land) and C
+    (no cell), each holding one 250 m cell (C none)."""
+    candidates = gpd.GeoDataFrame(
+        {"score": [60.0, 90.0]},
+        geometry=[box(0, 0, 250, 250), box(250, 0, 500, 250)],
+        crs="EPSG:2961",
+    )
+    parcels = gpd.GeoDataFrame(
+        {"PID": ["A", "B", "C"], "area_acres": [2.0, 3.0, 0.5], "land_acres": [2.0, 0.8, 0.5]},
+        geometry=[box(0, 0, 250, 250), box(250, 0, 500, 250), box(500, 0, 750, 250)],
+        crs="EPSG:2961",
+    )
+    return candidates, parcels
+
+
+def test_aggregate_leaves_parcels_under_the_minimum_land_area_unranked():
+    """SPEC 2.1: a Stage B parcel under the minimum area is excluded. B's better
+    cell doesn't save it: it has only 0.8 acres of land (3 mapped)."""
+    candidates, parcels = _three_parcels_with_cells()
+    result = aggregate_to_parcels(candidates, parcels, min_area_acres=1.0).set_index("PID")
+    assert result.loc["A", "rank"] == 1
+    assert pd.isna(result.loc["B", "score"]) and pd.isna(result.loc["B", "rank"])
+    assert result.loc["B", "cell_score"] == pytest.approx(90.0)  # kept for reference
+    assert result.loc["B", "flags"] == "parcel_below_min_area"
+    assert result.loc["C", "flags"] == "parcel_no_assigned_candidates; parcel_below_min_area"
+    assert result.loc["A", "flags"] == ""
+
+
+def test_aggregate_minimum_area_off_by_default():
+    candidates, parcels = _three_parcels_with_cells()
+    result = aggregate_to_parcels(candidates, parcels).set_index("PID")
+    assert result.loc["B", "rank"] == 1 and result.loc["A", "rank"] == 2
+    assert result.loc["B", "flags"] == ""
+
+
+def test_severance_flag_appends_to_existing_parcel_flags():
+    """classify_parcels keeps an existing flag when it adds the severance one."""
+    parcels = _parcels_with_metrics()
+    parcels["flags"] = ["parcel_below_min_area", "", ""]
+    buildings = gpd.GeoDataFrame(geometry=[box(50, 50, 60, 60)], crs="EPSG:2961")
+    result = classify_parcels(parcels, buildings).set_index("PID")
+    assert result.loc["60010001", "flags"] == "parcel_below_min_area; severance_candidate"

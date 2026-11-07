@@ -709,10 +709,12 @@ def run_visualize(config: Config, logger: logging.Logger) -> None:
         <span style="font-size: 11px; color: #888;">
             Composite (shown) = weighted sum. An "all-rounder" geometric-mean<br>
             score is also exported for true do-it-all parcels.<br>
-            Cells in protected areas or flood zones are excluded.
+            Cells in protected areas, flood zones or mostly water are excluded.<br>
+            Parcel acreage counts land only; parcels under __MIN_ACRES__ acre(s) of land are unranked.
         </span>
     </div>
     """
+    formula_html = formula_html.replace("__MIN_ACRES__", f"{config.min_parcel_area_acres:g}")
     m.get_root().html.add_child(folium.Element(formula_html))
 
     # Save map
