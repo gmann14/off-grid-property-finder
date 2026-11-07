@@ -36,11 +36,146 @@ def _reproject_to_working(gdf: gpd.GeoDataFrame, working_crs: str = WORKING_CRS)
     return gdf.to_crs(working_crs)
 
 
+def _transform_bounds(bbox: tuple, src_crs, dst_crs) -> tuple[float, float, float, float]:
+    """``bbox`` (in ``src_crs``) as bounds in ``dst_crs``, from 21 points along
+    each edge rather than the four corners, so an edge that curves outward in
+    the target CRS (a UTM bbox spanning the central meridian, seen in lat/lon)
+    stays inside the result."""
+    from pyproj import CRS as ProjCRS, Transformer
+
+    transformer = Transformer.from_crs(
+        ProjCRS.from_user_input(src_crs), ProjCRS.from_user_input(dst_crs), always_xy=True
+    )
+    return tuple(float(v) for v in transformer.transform_bounds(*bbox, densify_pts=21))
+
+
+# Nodata for a DEM mosaic whose tiles declare none (the HRDEM/CDEM value).
+_DEM_DEFAULT_NODATA = -32767.0
+# Source pixels of padding around the study area when mosaicking tiles, so the
+# bilinear reprojection has neighbours at the edges.
+_DEM_MOSAIC_PAD_PX = 2
+
+
+def _dem_tiles(raw: Path) -> tuple[list[Path], list[Path]]:
+    """HRDEM tiles (data/raw/hrdem/) and CDEM tiles (data/raw/dem/), sorted,
+    each file once."""
+    hrdem = sorted((raw / "hrdem").glob("*.tif"))
+    cdem = list(dict.fromkeys(
+        sorted((raw / "dem").glob("cdem_*.tif")) + sorted((raw / "dem").glob("*.tif"))
+    ))
+    return hrdem, cdem
+
+
+def _mosaic_dem_tiles(tiles: list[Path], dst_path: Path, bbox: tuple, working_crs: str) -> Path:
+    """One raster for a list of DEM tiles: a single tile is returned as is;
+    several are mosaicked with rasterio.merge over the study area (padded) into
+    ``dst_path``, at the finest tile resolution, the first tile in name order
+    winning where tiles overlap. Tiles in different CRSs are warped (bilinear)
+    to the working CRS first."""
+    if len(tiles) == 1:
+        return tiles[0]
+    from contextlib import ExitStack
+
+    from rasterio.merge import merge
+    from rasterio.vrt import WarpedVRT
+
+    with ExitStack() as stack:
+        srcs = [stack.enter_context(rasterio.open(p)) for p in tiles]
+        if len({s.crs for s in srcs}) > 1:
+            srcs = [stack.enter_context(WarpedVRT(s, crs=working_crs, resampling=Resampling.bilinear))
+                    for s in srcs]
+        first = srcs[0]
+        nodata = first.nodata if first.nodata is not None else _DEM_DEFAULT_NODATA
+        pad = _DEM_MOSAIC_PAD_PX * max(abs(r) for s in srcs for r in s.res)
+        b = _transform_bounds(bbox, working_crs, first.crs)
+        bounds = (
+            max(b[0] - pad, min(s.bounds.left for s in srcs)),
+            max(b[1] - pad, min(s.bounds.bottom for s in srcs)),
+            min(b[2] + pad, max(s.bounds.right for s in srcs)),
+            min(b[3] + pad, max(s.bounds.top for s in srcs)),
+        )
+        if bounds[0] >= bounds[2] or bounds[1] >= bounds[3]:
+            raise ValueError(f"None of the DEM tiles {[p.name for p in tiles]} overlap the study area {bbox}")
+        dst_path.unlink(missing_ok=True)
+        # The output profile starts from the first source's, so set the driver
+        # and block layout explicitly (a WarpedVRT source would say "VRT").
+        merge(srcs, bounds=bounds, nodata=nodata, use_highest_res=True, dst_path=dst_path,
+              dst_kwds={"driver": "GTiff", "tiled": True, "blockxsize": 256, "blockysize": 256,
+                        "BIGTIFF": "IF_SAFER"})
+    logger.info("Mosaicked %d DEM tiles: %s", len(tiles), ", ".join(p.name for p in tiles))
+    return dst_path
+
+
+def _extend_dem_to_bbox(image, transform, nodata, bbox):
+    """Place a cropped DEM on a grid aligned with it that covers the whole
+    bbox (never smaller than the input). Returns ``(image, transform, inside,
+    have)``: ``inside`` marks pixels whose centre is in the bbox (what
+    rasterio.mask keeps), ``have`` pixels holding a DEM value. When the input
+    already covers the bbox the image is returned as is, not copied."""
+    import math
+
+    import numpy as np
+    from rasterio.features import geometry_mask
+    from rasterio.transform import from_origin
+
+    _, h, w = image.shape
+    rx, ry = transform.a, -transform.e
+    x0, y0 = transform.c, transform.f
+    xmin, ymin, xmax, ymax = bbox
+    eps = 1e-6
+    col0 = min(0, math.floor((xmin - x0) / rx + eps))
+    col1 = max(w, math.ceil((xmax - x0) / rx - eps))
+    row0 = min(0, math.floor((y0 - ymax) / ry + eps))
+    row1 = max(h, math.ceil((y0 - ymin) / ry - eps))
+    if (col0, row0, col1, row1) == (0, 0, w, h):
+        ext, ext_transform = image, transform
+    else:
+        fill = nodata if nodata is not None else _DEM_DEFAULT_NODATA
+        ext = np.full((image.shape[0], row1 - row0, col1 - col0), fill, dtype=image.dtype)
+        ext[:, -row0:-row0 + h, -col0:-col0 + w] = image
+        ext_transform = from_origin(x0 + col0 * rx, y0 - row0 * ry, rx, ry)
+    inside = geometry_mask([box(*bbox)], out_shape=ext.shape[1:], transform=ext_transform, invert=True)
+    if nodata is None:
+        have = np.zeros(ext.shape[1:], dtype=bool)
+        have[-row0:-row0 + h, -col0:-col0 + w] = True
+    else:
+        band = ext[0]
+        have = np.isfinite(band)
+        if not np.isnan(nodata):
+            have &= band != nodata
+    return ext, ext_transform, inside, have
+
+
+def _fill_dem_from(ext, ext_transform, nodata, inside, have, fill_path: Path, working_crs: str) -> int:
+    """Fill ``ext`` (in place) where it has no value inside the bbox from the
+    raster at ``fill_path``, reprojected (bilinear) onto its grid. Returns the
+    number of pixels filled."""
+    import numpy as np
+
+    filled = np.zeros(ext.shape[1:], dtype=bool)
+    with rasterio.open(fill_path) as fsrc:
+        for i in range(ext.shape[0]):
+            fill = np.full(ext.shape[1:], nodata, dtype=ext.dtype)
+            reproject(
+                source=rasterio.band(fsrc, min(i + 1, fsrc.count)), destination=fill,
+                src_transform=fsrc.transform, src_crs=fsrc.crs, src_nodata=fsrc.nodata,
+                dst_transform=ext_transform, dst_crs=working_crs, dst_nodata=nodata,
+                resampling=Resampling.bilinear,
+            )
+            take = inside & ~have & np.isfinite(fill) & (fill != nodata)
+            ext[i][take] = fill[take]
+            filled |= take
+    return int(filled.sum())
+
+
 def ingest_dem(config: Config) -> Path | None:
     """Find and reproject the DEM to the working CRS, clipped to study area.
 
     Prefers HRDEM (2-5m LiDAR) over CDEM (18m). HRDEM gives much better
-    head estimation for hydro scoring.
+    head estimation for hydro scoring. Every tile of the chosen source is used
+    (mosaicked when there are several). Where HRDEM leaves part of the study
+    area without data, that part is filled from CDEM when CDEM tiles are
+    present; any part still without data is reported with the covered share.
     """
     raw = config.paths.raw
     processed = config.paths.processed
@@ -52,20 +187,48 @@ def ingest_dem(config: Config) -> Path | None:
         return out_path
 
     # Prefer HRDEM (higher resolution) over CDEM
-    hrdem_candidates = list((raw / "hrdem").glob("*.tif"))
-    cdem_candidates = list((raw / "dem").glob("cdem_*.tif")) + list((raw / "dem").glob("*.tif"))
-
-    if hrdem_candidates:
-        src_path = hrdem_candidates[0]
-        logger.info("Ingesting HRDEM (high-res LiDAR) from %s", src_path)
-    elif cdem_candidates:
-        src_path = cdem_candidates[0]
-        logger.info("Ingesting CDEM (18m) from %s", src_path)
+    hrdem_tiles, cdem_tiles = _dem_tiles(raw)
+    no_fill_hint = ""
+    if hrdem_tiles:
+        tiles, label, fill_tiles = hrdem_tiles, "HRDEM (high-res LiDAR)", cdem_tiles
+        no_fill_hint = f"; add CDEM tiles to {raw / 'dem'} to fill the gap"
+    elif cdem_tiles:
+        tiles, label, fill_tiles = cdem_tiles, "CDEM (18m)", []
     else:
         logger.warning("No DEM raster found in %s or %s", raw / "hrdem", raw / "dem")
         return None
+    if len(tiles) == 1:
+        logger.info("Ingesting %s from %s", label, tiles[0])
+    else:
+        logger.info("Ingesting %s from %d tiles in %s", label, len(tiles), tiles[0].parent)
 
     bbox = config.study_area.bbox
+    processed.mkdir(parents=True, exist_ok=True)
+    mosaic_path = processed / "dem_mosaic.tif"
+    fill_mosaic_path = processed / "dem_fill_mosaic.tif"
+    try:
+        src_path = _mosaic_dem_tiles(tiles, mosaic_path, bbox, working_crs)
+        out_image, out_meta = _reproject_clip_dem(src_path, processed, bbox, working_crs)
+        mosaic_path.unlink(missing_ok=True)
+        out_image, out_meta = _check_dem_coverage(
+            out_image, out_meta, bbox, working_crs, label, fill_tiles, fill_mosaic_path,
+            "" if fill_tiles else no_fill_hint,
+        )
+    finally:
+        mosaic_path.unlink(missing_ok=True)
+        fill_mosaic_path.unlink(missing_ok=True)
+
+    out_meta.update(compress="lzw")
+    with rasterio.open(out_path, "w", **out_meta) as dst:
+        dst.write(out_image)
+
+    logger.info("DEM processed: %s (%dx%d)", out_path, out_meta["width"], out_meta["height"])
+    return out_path
+
+
+def _reproject_clip_dem(src_path: Path, processed: Path, bbox: tuple, working_crs: str):
+    """Reproject ``src_path`` (bilinear) to the working CRS and crop it to the
+    bbox. Returns ``(image, meta)``."""
     bbox_geom = box(*bbox)
 
     with rasterio.open(src_path) as src:
@@ -102,14 +265,46 @@ def ingest_dem(config: Config) -> Path | None:
             transform=out_transform,
         )
 
-    out_meta.update(compress="lzw")
-    with rasterio.open(out_path, "w", **out_meta) as dst:
-        dst.write(out_image)
-
-    logger.info("DEM processed: %s (%dx%d)", out_path, out_meta["width"], out_meta["height"])
     # Clean up intermediate
     reproj_path.unlink(missing_ok=True)
-    return out_path
+    return out_image, out_meta
+
+
+def _check_dem_coverage(image, meta, bbox, working_crs, label, fill_tiles, fill_mosaic_path,
+                        no_fill_hint: str = ""):
+    """Measure how much of the bbox the cropped DEM has values for; fill any
+    gap from ``fill_tiles`` (CDEM under HRDEM) and warn about what is left.
+    Returns ``(image, meta)``, unchanged unless a gap was filled."""
+    nodata = meta["nodata"]
+    ext, ext_transform, inside, have = _extend_dem_to_bbox(image, meta["transform"], nodata, bbox)
+    n_inside = int(inside.sum())
+    n_have = int((inside & have).sum())
+    if n_inside == 0 or n_have == n_inside:
+        return image, meta
+
+    share = n_have / n_inside
+    if fill_tiles:
+        fill_nodata = nodata if nodata is not None else _DEM_DEFAULT_NODATA
+        fill_src = _mosaic_dem_tiles(fill_tiles, fill_mosaic_path, bbox, working_crs)
+        n_filled = _fill_dem_from(ext, ext_transform, fill_nodata, inside, have, fill_src, working_crs)
+        ext[:, ~inside] = fill_nodata
+        logger.info(
+            "%s has values for %.1f%% of the study area; filled %d px (%.1f%%) from CDEM (%s)",
+            label, 100 * share, n_filled, 100 * n_filled / n_inside,
+            ", ".join(p.name for p in fill_tiles),
+        )
+        image = ext
+        meta = {**meta, "nodata": fill_nodata, "transform": ext_transform,
+                "height": ext.shape[1], "width": ext.shape[2]}
+        n_have += n_filled
+        share = n_have / n_inside
+    if n_have < n_inside:
+        logger.warning(
+            "DEM has values for only %.1f%% of the study area (%d of %d px have no data); "
+            "cells there get no elevation, slope or hydro head%s",
+            100 * share, n_inside - n_have, n_inside, no_fill_hint,
+        )
+    return image, meta
 
 
 def ingest_streams(config: Config) -> Path | None:
