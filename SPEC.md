@@ -23,7 +23,7 @@ The working unit is fixed by stage:
 
 Every result should include:
 - `score` — the normalized score over enabled criteria
-- `confidence_score` — numeric confidence from `0-100`
+- `confidence` — numeric confidence from `0-100`
 - `confidence_band` — `high`, `medium`, or `low`
 - `status` — `eligible` or `excluded`
 - `exclusion_reasons` — empty for eligible records
@@ -273,6 +273,14 @@ Do not zero out good candidates just because access or flood information is inco
    - Drainage area below minimum threshold
 6. Best candidate-cell hydro score = the candidate with the highest **conservative low-flow power**, not the candidate with the highest raw head alone
 
+**Implementation notes (`src/scoring/hydro.py`, constants in `src/constants.py`):**
+- Each NSHN line is sampled every 5 m (`HYDRO_PROFILE_STEP_M`). A sample's elevation is the lowest DEM pixel in the 3×3 around it (`HYDRO_CHANNEL_SNAP_PX`), so a line drawn a few metres up the bank reads the channel bed. A running median over ±20 m (`HYDRO_HEAD_SMOOTH_M`) then damps pixel noise.
+- Lines are ordered upstream-first. FLOWDIR = 1 lines are drawn downstream; FLOWDIR = 0 banks are oriented by the DEM. A pair can run on into the next line downstream: at a split the chain follows the line with the larger drainage.
+- Head is the smaller of the drops on the carved profile (min over the 200 m upstream) and the filled profile (max over the 200 m downstream; `HYDRO_HEAD_CONDITION_M`). A DEM bump along the channel is then not head. The window is finite, so a road fill further down can't wipe out every pair above it.
+- Flow is taken at the pair's upper end (the intake). Drainage there is the maximum flow-accumulation read (3×3) within ±60 m along the line's own trace (`HYDRO_DRAINAGE_WINDOW_M`), because NSHN lines wander more than one 20 m routing pixel off the routed channel. The last 40 m of a FLOWDIR = 1 line is skipped (`HYDRO_DRAINAGE_JUNCTION_SKIP_M`), where the read would pick up the receiving river.
+- A line with no DEM coverage falls back to its NSHN MINZ/MAXZ range.
+- The 500 m maximum separation means a gentle large river (under ~0.6% grade, under 3 m of fall over 500 m) scores 0, however much water it carries.
+
 ### 3.2 Flow Estimation
 
 **Challenge:** Direct flow measurements exist only at WSC gauging stations (~80 active in NS). Most small streams are ungauged.
@@ -289,6 +297,14 @@ Do not zero out good candidates just because access or flood information is inco
 - Use a **conservative low-flow proxy**, not mean annual runoff
 - Start with specific runoff of ~8–12 L/s/km² for low-flow screening in southern NS, then calibrate against HYDAT by watershed
 - `Q_design = drainage_area_km² × specific_runoff_low`
+
+**Flow routing as built (`src/dem.py`):**
+- The DEM is resampled to 20 m (`FLOW_ACCUM_TARGET_RES_M`). Sea pixels (≤ `SEA_LEVEL_M`) are set to nodata, so the coast is the outlet, and the result is breached (WhiteboxTools), D8-routed and accumulated.
+- The conditioned DEM and direction rasters are rebuilt with every accumulation, never reused.
+- `flow_accumulation_valid` checks the raster on land cells only. A broken raster falls back to a segment-length proxy, with a logged reason.
+- Known limits:
+  - The stream network stops at lakes, so which of a lake's mapped outlets or inflows carries its water is the D8 routing's choice. About 400–500 of the 21,030 eligible cells change hydro score between routings that differ only in such choices.
+  - Drainage gathered outside the study-area bbox is not counted.
 
 ### 3.3 Reference Values for NS
 
@@ -373,13 +389,13 @@ Do not zero out good candidates just because access or flood information is inco
    ├── Add parcel area metric
    ├── Add optional preference metrics
    ├── Recompute normalized parcel score
-   └── Preserve flags + confidence_score/confidence_band from underlying candidates
+   └── Preserve flags + confidence/confidence_band from underlying candidates
 
 4. OUTPUT
    ├── Ranked CSV/GeoJSON of eligible candidate cells or parcels
    ├── Excluded-record export or clearly labeled excluded view
    ├── status + exclusion_reasons for every record
-   ├── confidence_score + confidence_band + flags for every record
+   ├── confidence + confidence_band + flags for every record
    ├── Interactive web map (Folium/Leaflet)
    └── Per-parcel detail report
 ```
@@ -406,7 +422,7 @@ Do not zero out good candidates just because access or flood information is inco
 - Download road network and, if available, civic-address data
 - Download protected-area and flood/coastal-risk data if accessible for the study area
 - Generate a fixed `250m × 250m` candidate grid over the study area, then keep cells passing the coarse rural-eligibility mask
-- Compute the **base suitability score**, `status`, `exclusion_reasons`, `confidence_score`, `confidence_band`, and `flags`
+- Compute the **base suitability score**, `status`, `exclusion_reasons`, `confidence`, `confidence_band`, and `flags`
 - Output: ranked candidate cells + basic Folium map
 
 **Skip for MVP:**
@@ -656,7 +672,7 @@ MVP can deliver a ranked candidate-cell suitability map in a short sprint, but t
 - [ ] No obviously unsuitable areas in the top-20 (e.g., urban cores, tiny constrained sites, protected lands)
 - [ ] Hydro scores correlate with known steep/stream-rich terrain and, where possible, known hydro sites
 - [ ] Solar/open-area scores correlate with south-facing or already-open terrain visible on imagery
-- [ ] Results clearly expose `status`, `exclusion_reasons`, `confidence_score`, `confidence_band`, and `flags`
+- [ ] Results clearly expose `status`, `exclusion_reasons`, `confidence`, `confidence_band`, and `flags`
 - [ ] Total processing time <30 minutes for study area
 
 ## 12. File Structure

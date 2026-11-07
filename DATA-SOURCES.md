@@ -76,6 +76,7 @@
 - **Cost:** Free (open data license)
 - **Contents:** Rivers, streams, lakes, swamps, water flow lines. The authoritative source for NS inland surface water.
 - **Spec doc:** https://nsgc.gov.ns.ca/mappingspecs/Specifications/Compilation/NSHN/NSHN_V2.0_Spec_V1.1.htm
+- **What hydro uses:** flowing-water lines only. Lake shorelines, wharves, dams, boundaries and island shorelines are dropped. So is every tidal line: all `WACO*` codes (WACO20/25 coastline, WACORV* tidal river banks and centrelines, WACO*F0 closing lines) and LINE_CLASS 3 (coastline). Those carry MINZ = MAXZ = 0.2 m and sit at sea level, so they have no head.
 
 ### 2.2 National Hydro Network (NHN)
 

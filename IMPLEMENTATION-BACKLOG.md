@@ -18,7 +18,7 @@ This backlog assumes:
 - Suitability surface / candidate-cell scoring before parcel integration
 - Stage A unit = fixed `250m × 250m` square candidate cell
 - No listing scraping in MVP
-- Output schema is first-class, not polish: `score`, `status`, `exclusion_reasons`, `confidence_score`, `confidence_band`, `flags`
+- Output schema is first-class, not polish: `score`, `status`, `exclusion_reasons`, `confidence`, `confidence_band`, `flags`
 
 ## 2. Milestones
 
@@ -37,7 +37,7 @@ Exit criteria:
 
 Outcome:
 - ✅ Scored study area near Lunenburg using fixed candidate cells (~40,000 cells)
-- ✅ Export GeoJSON/CSV with `score`, `status`, `exclusion_reasons`, `confidence_score`, `confidence_band`, and `flags`
+- ✅ Export GeoJSON/CSV with `score`, `status`, `exclusion_reasons`, `confidence`, `confidence_band`, and `flags`
 - ✅ Interactive Folium map
 
 Exit criteria:
@@ -90,6 +90,10 @@ validates the raster (`flow_accumulation_valid`) and only uses it when river-sca
 else falls back to the proxy and reports it honestly; (2) `prepare`/`dem.py` now use
 depression **breaching** (handles flats) instead of fill — **re-run `prepare` to
 regenerate a valid accumulation raster** for real hydro drainage areas.
+*(2026-11-07: routing now sets sea pixels to nodata before breaching, so the
+coast is the outlet. The validity check looks at land cells only, and the
+conditioned rasters are rebuilt with every accumulation; the raster was
+regenerated that day. See SPEC §3.2.)*
 
 **Remaining limitation:** `open_ground` water exclusion only carves out watercourse
 *lines* (streams.gpkg) + any typed water polygons in land-cover; without a waterbody
@@ -227,7 +231,7 @@ The MVP is done when:
 - ✅ A documented setup works from a clean repo
 - ✅ Required datasets for the study area can be prepared without manual debugging
 - ✅ The scorer runs end-to-end for the study area
-- ✅ Output includes `score`, `status`, `exclusion_reasons`, `confidence_score`, `confidence_band`, and `flags`
+- ✅ Output includes `score`, `status`, `exclusion_reasons`, `confidence`, `confidence_band`, and `flags`
 - ✅ A map and tabular export are produced
 - ✅ T1 unit tests pass on a fresh checkout
 - ⚠️ Top-ranked candidates survive manual sanity-check review — **needs formal validation**

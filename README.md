@@ -48,7 +48,7 @@ Each eligible cell receives a weighted composite score (0-100):
 
 | Criterion | Weight | What it measures |
 |-----------|--------|------------------|
-| **Hydro** | 40% | Micro-hydro power potential from nearby streams (head x flow x efficiency). Drainage area from a validated flow-accumulation raster when available, else a segment-length proxy. |
+| **Hydro** | 40% | Micro-hydro power potential from mapped streams within 100 m (head x low flow x efficiency). Head comes from SPEC §3.1 intake/outfall pairs 50–500 m apart down the stream, with at least 3 m of fall. Flow is read at the intake from a validated flow-accumulation raster, routed on land with the sea as the outlet (else a segment-length proxy). Coastline and tidal lines don't count as streams. |
 | **Access** | 20% | Distance from the cell to the nearest road or civic address (not legal access); "within 50/200/500 m" is measured from the cell's edge, inclusive |
 | **Open ground** | 15% | Flat, open, unbuilt, non-water land area — ground-mount solar room + building pad (small bonus when a quarter of that open ground faces south; none for a cell with no open ground) |
 | **Wind** | 15% | Estimated mean wind speed at a small off-grid turbine's hub height (default 30 m, `wind.hub_height_m`), extrapolated down from the Global Wind Atlas 50 m and 100 m layers with a per-pixel power-law shear fit (GWA's 10 m layer sits inside the forest canopy and isn't used). Bands: ≥6.0 m/s 100, 5.0–6.0 85, 4.5–5.0 65, 4.0–4.5 40, <4.0 15. Falls back to terrain exposure (TPI ridge/hilltop) as a proxy if GWA is unreachable. |
