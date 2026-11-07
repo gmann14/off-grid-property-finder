@@ -1,7 +1,6 @@
 """Tests for elevation scoring."""
 
 import pandas as pd
-import pytest
 
 from src.scoring.bands import band_score
 from src.scoring.elevation import score_elevation

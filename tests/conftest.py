@@ -1,14 +1,12 @@
 """Shared synthetic fixtures for property-finder tests."""
 
-import tempfile
-from pathlib import Path
 
 import geopandas as gpd
 import numpy as np
 import pytest
 import rasterio
 from rasterio.transform import from_bounds
-from shapely.geometry import LineString, Point, Polygon, box
+from shapely.geometry import LineString, Point, box
 
 CRS = "EPSG:2961"
 BBOX = (380000.0, 4900000.0, 381000.0, 4901000.0)  # 1km x 1km study area

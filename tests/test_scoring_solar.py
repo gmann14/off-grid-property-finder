@@ -1,6 +1,5 @@
 """Tests for solar scoring."""
 
-import pytest
 
 from src.scoring.solar import _classify_solar_pixel
 from src.constants import SOLAR_FLAT_SLOPE

@@ -1,7 +1,6 @@
 """Buildable/open-area scoring based on buildability mask percentage."""
 
 import logging
-from pathlib import Path
 
 import geopandas as gpd
 import pandas as pd

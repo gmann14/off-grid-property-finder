@@ -6,7 +6,6 @@ Runs in two phases:
 """
 
 import logging
-from pathlib import Path
 
 from src.config import Config
 from src.dem import (

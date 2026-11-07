@@ -1,7 +1,6 @@
 """Tests for open-ground capacity scoring (merged solar + buildable)."""
 
 import numpy as np
-import pandas as pd
 import rasterio
 from rasterio.transform import from_bounds
 

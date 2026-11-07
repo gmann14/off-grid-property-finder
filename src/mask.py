@@ -8,7 +8,6 @@ import numpy as np
 import rasterio
 from shapely.geometry import box
 
-from src.config import Config
 
 logger = logging.getLogger("property_finder")
 

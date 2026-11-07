@@ -1041,10 +1041,9 @@ def fetch_flood_polygons(
     from src.constants import FLOOD_EXPORT_SIZE, FLOOD_SERVICE
 
     try:
-        import numpy as np
         import requests
     except ImportError:
-        logger.error("requests/numpy required for flood ingestion")
+        logger.error("requests required for flood ingestion")
         return None
 
     base = (service_url or FLOOD_SERVICE).rstrip("/") + "/export"

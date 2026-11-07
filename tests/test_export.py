@@ -2,7 +2,6 @@
 
 import geopandas as gpd
 import pandas as pd
-import pytest
 from shapely.geometry import box
 
 from src.export import export_ranked_parcels, export_results

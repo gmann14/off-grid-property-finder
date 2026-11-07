@@ -1,12 +1,10 @@
 """Optional preference metrics (Stage B and bonus scoring)."""
 
 import logging
-from pathlib import Path
 
 import geopandas as gpd
 import pandas as pd
 
-from src.config import Config
 from src.constants import (
     FLAG_PARCEL_BELOW_MIN_AREA,
     FLAG_PARCEL_NO_CANDIDATES,

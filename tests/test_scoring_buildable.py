@@ -1,6 +1,5 @@
 """Tests for buildable area scoring."""
 
-import pytest
 
 from src.scoring.bands import band_score
 from src.constants import BUILDABLE_PERCENT_THRESHOLDS

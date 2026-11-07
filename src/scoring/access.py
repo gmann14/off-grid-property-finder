@@ -1,7 +1,6 @@
 """Access scoring — road proximity and civic address presence."""
 
 import logging
-from pathlib import Path
 
 import geopandas as gpd
 import numpy as np

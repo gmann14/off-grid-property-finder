@@ -1,7 +1,6 @@
 """Scoring engine orchestrator."""
 
 import logging
-from pathlib import Path
 
 import geopandas as gpd
 

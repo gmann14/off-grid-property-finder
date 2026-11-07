@@ -5,7 +5,6 @@ import pandas as pd
 import pytest
 
 from src.exclusions import apply_exclusions, load_exclusions
-from src.grid import generate_candidate_grid
 from src.scoring.confidence import compute_confidence
 from src.scoring.registry import _REGISTRY, compute_composite_score, register
 
@@ -74,7 +73,6 @@ def test_run_score_end_to_end_default_criteria(
     15-minute full run. Asserts it completes and emits the expected outputs.
     """
     import shutil
-    import geopandas as gpd
     from shapely.geometry import box
     from src.config import Config, Paths, StudyArea
     from src.mask import build_buildability_mask

@@ -105,7 +105,6 @@ def _add_contours(m, dem_path: Path, processed: Path):
     """Generate elevation contour lines from DEM and add as a map layer."""
     import folium
     import rasterio
-    from rasterio.features import shapes as rasterio_shapes
 
     try:
         from skimage import measure

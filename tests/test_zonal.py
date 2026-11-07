@@ -93,8 +93,6 @@ class TestZonalFrac:
         lo, hi = 20.0, 60.0
         result = grid_zonal_stats(poly, raster_path, stats=("frac",), nodata=NODATA, frac_range=(lo, hi))
 
-        with rasterio.open(raster_path) as src:
-            full = src.read(1)
         # The 200x200m polygon at the origin covers pixels [80:100, 0:20]
         # (10m pixels, raster origin at row0=top=y=1000) — read the exact
         # window rather than re-deriving the transform to keep this independent.

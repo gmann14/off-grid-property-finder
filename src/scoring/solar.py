@@ -1,13 +1,11 @@
 """Solar suitability scoring based on aspect, slope, and open-area analysis."""
 
 import logging
-from pathlib import Path
 
 import geopandas as gpd
 import numpy as np
 import pandas as pd
 import rasterio
-from rasterio.features import geometry_mask
 from rasterio.windows import from_bounds
 
 from src.config import Config

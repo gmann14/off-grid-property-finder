@@ -1,7 +1,6 @@
 """Elevation/terrain scoring via zonal statistics on DEM."""
 
 import logging
-from pathlib import Path
 
 import geopandas as gpd
 import numpy as np

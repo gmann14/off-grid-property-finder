@@ -9,7 +9,6 @@ import pandas as pd
 import shapely
 from shapely.geometry import box
 
-from src.config import Config
 from src.constants import SQ_M_PER_ACRE
 
 logger = logging.getLogger("property_finder")
