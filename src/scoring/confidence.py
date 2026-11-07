@@ -17,13 +17,20 @@ from src.constants import (
 
 logger = logging.getLogger("property_finder")
 
-# Per-cell flag deduction amounts.  These are subtracted from the
-# confidence score for each individual cell that triggers the flag,
-# in addition to any global data-quality deductions.
+# Per-cell flag deductions, subtracted from the confidence of each cell that
+# carries the flag, on top of any global data-quality deductions. A string is
+# the config.confidence_deductions key the amount is read from (falling back
+# to src.constants.CONFIDENCE_DEDUCTIONS); a number is a fixed amount.
 PER_CELL_DEDUCTIONS = {
-    FLAG_ACCESS_UNVERIFIED: 15,   # no road evidence within 200m
+    FLAG_ACCESS_UNVERIFIED: "no_road_evidence_200m",  # no road evidence within 200m
     FLAG_HYDRO_LOW_CONFIDENCE: 10,  # hydro score is zero / no stream data
 }
+
+
+def _deduction(deductions: dict, key: str) -> float | None:
+    """``deductions[key]``, else the src.constants default, else None."""
+    amount = deductions.get(key, CONFIDENCE_DEDUCTIONS.get(key))
+    return None if amount is None else float(amount)
 
 
 def compute_confidence(
@@ -50,9 +57,10 @@ def compute_confidence(
 
     # Apply global data-quality deductions
     for flag, applies in data_flags.items():
-        if applies and flag in deductions:
-            confidence -= deductions[flag]
-            logger.info("Confidence deduction: %s (-%d)", flag, deductions[flag])
+        amount = _deduction(deductions, flag) if applies else None
+        if amount is not None:
+            confidence -= amount
+            logger.info("Confidence deduction: %s (-%g)", flag, amount)
 
     # Per-cell flags and deductions — vectorized (was a per-row iterrows loop).
     # access_score/hydro_score default to an all-NaN Series when the column is
@@ -67,8 +75,11 @@ def compute_confidence(
     ]
 
     for mask, flag in flag_masks:
-        if flag in PER_CELL_DEDUCTIONS:
-            confidence = confidence.where(~mask, confidence - PER_CELL_DEDUCTIONS[flag])
+        amount = PER_CELL_DEDUCTIONS.get(flag)
+        if isinstance(amount, str):
+            amount = _deduction(deductions, amount)
+        if amount:
+            confidence = confidence.where(~mask, confidence - amount)
 
     # Build the semicolon-joined flags string per cell via a fold: at each step,
     # concatenate with "; " only where both sides are non-empty.

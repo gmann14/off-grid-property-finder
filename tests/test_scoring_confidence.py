@@ -91,6 +91,30 @@ def test_per_cell_access_deduction():
     assert result["confidence"].iloc[0] == 85.0
 
 
+def test_per_cell_access_deduction_reads_config():
+    """Regression: the per-cell access amount was hard-coded at 15, so
+    ``confidence_deductions.no_road_evidence_200m`` in config.yaml did nothing."""
+    cfg = _make_config()
+    cfg.confidence_deductions = {**cfg.confidence_deductions, "no_road_evidence_200m": 25}
+    result = compute_confidence(_make_candidates(score_access=30), cfg, data_flags={})
+    assert result["confidence"].iloc[0] == 75.0
+
+
+def test_per_cell_access_deduction_falls_back_to_default_when_key_absent():
+    cfg = _make_config()
+    cfg.confidence_deductions = {"no_flood_data": 20}  # no no_road_evidence_200m key
+    result = compute_confidence(_make_candidates(score_access=30), cfg, data_flags={})
+    assert result["confidence"].iloc[0] == 85.0
+
+
+def test_global_deduction_falls_back_to_default_when_key_absent():
+    cfg = _make_config()
+    cfg.confidence_deductions = {}
+    result = compute_confidence(_make_candidates(), cfg,
+                                data_flags={"incomplete_land_cover_mask": True})
+    assert result["confidence"].iloc[0] == 90.0
+
+
 def test_per_cell_hydro_deduction():
     """Hydro low-confidence flag should deduct 10 from confidence."""
     candidates = _make_candidates(score_hydro=0)

@@ -167,4 +167,8 @@ def _detect_data_flags(config: Config) -> dict[str, bool]:
     from src.scoring.wind import wind_uses_proxy
     flags["wind_proxy_only"] = wind_uses_proxy(config)
 
+    # Buildability (open-ground) mask built without land cover or buildings
+    from src.mask import buildability_mask_incomplete
+    flags["incomplete_land_cover_mask"] = buildability_mask_incomplete(processed)
+
     return flags

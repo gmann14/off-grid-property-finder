@@ -110,3 +110,73 @@ def test_buildings_are_excluded(tmp_path):
 
     build_buildability_mask(slope, None, None, bpath, BBOX, CRS, building_buffer_m=10)
     assert _fraction_buildable(tmp_path / "buildability_mask.tif") < 1.0
+
+
+# --- incomplete_land_cover_mask detection ------------------------------------
+
+def _tiny_layer(path):
+    xmin, ymin = BBOX[0], BBOX[1]
+    gpd.GeoDataFrame({"type": ["TREE AREA"]}, geometry=[box(xmin, ymin, xmin + 10, ymin + 10)],
+                     crs=CRS).to_file(path, driver="GPKG")
+    return path
+
+
+def test_mask_built_without_land_cover_or_buildings_is_incomplete(tmp_path, caplog):
+    """Regression: the mask was built without land cover or buildings without
+    saying so, and score never set incomplete_land_cover_mask."""
+    from src.mask import buildability_mask_incomplete
+
+    slope = _write_flat_slope(tmp_path / "slope.tif")
+    with caplog.at_level("WARNING", logger="property_finder"):
+        build_buildability_mask(slope, None, None, None, BBOX, CRS)
+    assert "no land cover" in caplog.text and "no building footprints" in caplog.text
+    assert buildability_mask_incomplete(tmp_path) is True
+    # Dropping the files in afterwards doesn't fix a mask built without them.
+    _tiny_layer(tmp_path / "land_cover.gpkg")
+    _tiny_layer(tmp_path / "buildings.gpkg")
+    assert buildability_mask_incomplete(tmp_path) is True
+
+
+def test_mask_built_with_land_cover_and_buildings_is_complete(tmp_path):
+    from src.mask import buildability_mask_incomplete
+
+    slope = _write_flat_slope(tmp_path / "slope.tif")
+    lc = _tiny_layer(tmp_path / "land_cover.gpkg")
+    bld = _tiny_layer(tmp_path / "buildings.gpkg")
+    build_buildability_mask(slope, lc, None, bld, BBOX, CRS)
+    assert buildability_mask_incomplete(tmp_path) is False
+    build_buildability_mask(slope, lc, None, None, BBOX, CRS)  # buildings missing
+    assert buildability_mask_incomplete(tmp_path) is True
+
+
+def test_untagged_mask_is_judged_by_the_input_files(tmp_path):
+    """A mask from before the input tags existed (like the real one)."""
+    from src.mask import buildability_mask_incomplete
+
+    slope = _write_flat_slope(tmp_path / "slope.tif")
+    with rasterio.open(slope) as s:
+        meta = s.meta.copy()
+    meta.update(dtype="uint8", nodata=255)
+    with rasterio.open(tmp_path / "buildability_mask.tif", "w", **meta) as d:
+        d.write(np.ones((100, 100), dtype="uint8"), 1)
+    assert buildability_mask_incomplete(tmp_path) is True
+    _tiny_layer(tmp_path / "land_cover.gpkg")
+    _tiny_layer(tmp_path / "buildings.gpkg")
+    assert buildability_mask_incomplete(tmp_path) is False
+
+
+def test_no_mask_at_all_is_incomplete(tmp_path):
+    from src.mask import buildability_mask_incomplete
+
+    assert buildability_mask_incomplete(tmp_path) is True
+
+
+def test_score_data_flags_include_incomplete_land_cover_mask(tmp_path):
+    from src.config import Config, Paths, StudyArea
+    from src.score import _detect_data_flags
+
+    slope = _write_flat_slope(tmp_path / "slope.tif")
+    build_buildability_mask(slope, None, None, None, BBOX, CRS)
+    cfg = Config(study_area=StudyArea(bbox=BBOX),
+                 paths=Paths(raw=tmp_path / "raw", processed=tmp_path, output=tmp_path / "out"))
+    assert _detect_data_flags(cfg)["incomplete_land_cover_mask"] is True

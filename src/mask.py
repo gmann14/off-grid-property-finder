@@ -12,6 +12,32 @@ from src.config import Config
 
 logger = logging.getLogger("property_finder")
 
+# GeoTIFF tags on buildability_mask.tif recording whether each optional mask
+# input went in ("yes") or was missing ("missing").
+MASK_INPUT_TAGS = {"land_cover": "PF_LAND_COVER", "buildings": "PF_BUILDINGS"}
+
+
+def buildability_mask_incomplete(processed: Path) -> bool:
+    """True if ``processed/buildability_mask.tif`` lacks land cover or
+    building footprints (or doesn't exist).
+
+    Reads the mask's input tags; a mask from before those tags existed is
+    judged by whether ``land_cover.gpkg`` and ``buildings.gpkg`` are in
+    ``processed`` now, since prepare builds the mask from those files.
+    """
+    mask_path = Path(processed) / "buildability_mask.tif"
+    if not mask_path.exists():
+        return True
+    try:
+        with rasterio.open(mask_path) as src:
+            tags = src.tags()
+    except rasterio.errors.RasterioIOError as e:
+        raise RuntimeError(f"Cannot read {mask_path}: {e}") from e
+    recorded = {k: tags.get(tag) for k, tag in MASK_INPUT_TAGS.items()}
+    if all(v is not None for v in recorded.values()):
+        return any(v != "yes" for v in recorded.values())
+    return not all((Path(processed) / f"{k}.gpkg").exists() for k in MASK_INPUT_TAGS)
+
 
 def build_rural_mask(
     land_cover_path: Path | None,
@@ -163,10 +189,25 @@ def build_buildability_mask(
     the fix for the prior version, which applied only the slope rule and so
     marked ~all land — including water and sea-level flats — as buildable.
     Returns the mask path, or None if no slope raster is available.
+
+    Whether land cover and building footprints went in is written to the
+    mask's tags (see ``MASK_INPUT_TAGS``), so ``score`` can lower confidence
+    for a mask built without them (``incomplete_land_cover_mask``).
     """
     if slope_path is None or not slope_path.exists():
         logger.warning("No slope raster available; cannot build buildability mask")
         return None
+
+    inputs = {
+        "land_cover": land_cover_path is not None and Path(land_cover_path).exists(),
+        "buildings": buildings_path is not None and Path(buildings_path).exists(),
+    }
+    if not inputs["land_cover"]:
+        logger.warning("Buildability mask: no land cover, so forest and wetland count as "
+                       "open ground (confidence will be lowered: incomplete_land_cover_mask)")
+    if not inputs["buildings"]:
+        logger.warning("Buildability mask: no building footprints, so built-on land counts as "
+                       "open ground (confidence will be lowered: incomplete_land_cover_mask)")
 
     with rasterio.open(slope_path) as src:
         slope = src.read(1)
@@ -227,6 +268,8 @@ def build_buildability_mask(
     meta.update(dtype="uint8", nodata=255, compress="lzw")
     with rasterio.open(mask_path, "w", **meta) as dst:
         dst.write(buildable, 1)
+        dst.update_tags(**{MASK_INPUT_TAGS[k]: "yes" if used else "missing"
+                           for k, used in inputs.items()})
 
     frac = buildable.mean() * 100
     logger.info(
