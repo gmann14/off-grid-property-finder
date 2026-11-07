@@ -147,3 +147,10 @@ def test_cli_score_exits_1_when_a_scorer_fails(runner, tmp_path, monkeypatch):
     result = runner.invoke(cli, ["--config", str(cfg), "score"])
     assert result.exit_code == 1
     assert not isinstance(result.exception, ScorerError)   # clean exit, no traceback
+
+
+def test_cli_check_data_exits_1_when_required_raw_layers_are_missing(runner, tmp_path):
+    """Regression: check-data logged MISSING (required) but exited 0, so a
+    script chaining `check-data && ingest` ran ingest anyway."""
+    result = runner.invoke(cli, ["--config", str(_write_config(tmp_path)), "check-data"])
+    assert result.exit_code == 1

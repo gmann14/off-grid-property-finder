@@ -156,3 +156,41 @@ def test_waterbodies_layer_checked(tmp_path):
     gpd.GeoDataFrame({"id": [1]}, geometry=[box(0, 0, 1, 1)], crs=CRS).to_file(d / "wet.gpkg", driver="GPKG")
     results = run_check_data(cfg, logging.getLogger("test"))
     assert results["waterbodies"]["status"] == "ok"
+
+
+# --- which results make check-data exit 1 -----------------------------------
+
+def test_problems_are_missing_required_and_broken_layers():
+    from src.check_data import check_data_problems
+
+    results = {
+        "dem": {"status": "MISSING (required)"},
+        "buildings": {"status": "MISSING (optional)"},
+        "streams": {"status": "ok"},
+        "roads": {"status": "error", "error": "not a shapefile"},
+        "parcels": {"status": "AMBIGUOUS (several files, one expected)"},
+        "flood": {"status": "NOT YET FETCHED (auto)"},
+    }
+    assert check_data_problems(results) == [
+        "dem: MISSING (required)",
+        "roads: error",
+        "parcels: AMBIGUOUS (several files, one expected)",
+    ]
+
+
+def test_no_problems_when_only_optional_or_auto_layers_are_absent():
+    from src.check_data import check_data_problems
+
+    assert check_data_problems({
+        "dem": {"status": "ok"},
+        "buildings": {"status": "MISSING (optional)"},
+        "wind": {"status": "NOT YET FETCHED (auto)"},
+    }) == []
+
+
+def test_missing_required_layer_is_a_problem_in_a_real_check(tmp_path):
+    from src.check_data import check_data_problems
+
+    problems = check_data_problems(run_check_data(_cfg(tmp_path), logging.getLogger("test")))
+    assert "dem: MISSING (required)" in problems
+    assert not any(p.startswith("buildings") for p in problems)

@@ -167,3 +167,16 @@ def run_check_data(config: Config, logger: logging.Logger) -> dict[str, dict]:
     logger.info("Data check complete: %d/%d layers found and readable", ok_count, total)
 
     return results
+
+
+def check_data_problems(results: dict[str, dict]) -> list[str]:
+    """Layers that would stop or mislead ``ingest``: a required raw layer that
+    is missing, and any raw layer that is present but unreadable or ambiguous.
+    A missing optional layer and a not-yet-fetched auto layer are fine."""
+    problems = []
+    for name, r in results.items():
+        status = r.get("status", "")
+        if status == "ok" or status.startswith(("MISSING (optional)", "NOT YET FETCHED")):
+            continue
+        problems.append(f"{name}: {status}")
+    return problems

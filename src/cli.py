@@ -20,12 +20,19 @@ def cli(ctx: click.Context, config_path: str, log_level: str | None) -> None:
 @cli.command()
 @click.pass_context
 def check_data(ctx: click.Context) -> None:
-    """Check that required data files are present and readable."""
-    from src.check_data import run_check_data
+    """Check that required data files are present and readable.
+
+    Exits 1 when a required raw layer is missing or any raw layer is
+    unreadable or ambiguous, so scripts can stop before ``ingest``."""
+    from src.check_data import check_data_problems, run_check_data
 
     cfg = ctx.obj["config"]
     logger = ctx.obj["logger"]
-    run_check_data(cfg, logger)
+    problems = check_data_problems(run_check_data(cfg, logger))
+    if problems:
+        logger.error("check-data: %d layer(s) would stop ingest: %s",
+                     len(problems), "; ".join(problems))
+        ctx.exit(1)
 
 
 @cli.command()
