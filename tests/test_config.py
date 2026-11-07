@@ -291,7 +291,7 @@ def test_positive_whole_cell_sizes_load(tmp_path, good):
     ({**DEFAULT_WEIGHTS, "hydro": True}, r"weights\.hydro must be a finite number >= 0"),
     ({**DEFAULT_WEIGHTS, "hydro": None}, r"weights\.hydro must be a finite number >= 0"),
     ({k: 0 for k in DEFAULT_WEIGHTS}, "weights sum to 0"),
-    ([40, 20, 15, 15, 10], "weights must map criterion name"),
+    ([40, 20, 15, 15, 10], "weights: must be a mapping"),
 ])
 def test_invalid_weights_raise_clearly(tmp_path, weights, message):
     with pytest.raises(ValueError, match=message):
@@ -390,3 +390,122 @@ def test_parcel_aggregation_edges_load_as_validated_values(tmp_path, agg, top_n,
 def test_no_preferences_block_gives_the_default_parcel_aggregation(tmp_path):
     cfg = load_config(_write(tmp_path))
     assert cfg.preferences == {"parcel_aggregation": {"top_n": 3, "cell_weight": 0.65}}
+
+
+# --- unknown keys, null blocks, empty files ---------------------------------
+
+def _write_raw(tmp_path, text):
+    config_file = tmp_path / "config.yaml"
+    config_file.write_text(text)
+    return config_file
+
+
+@pytest.mark.parametrize("extra, where, typo", [
+    ({"weight": {"hydro": 100}}, "config.yaml", "weight"),          # silently used the defaults
+    ({"min_parcel_area": 40}, "config.yaml", "min_parcel_area"),    # silently stayed at 1 acre
+    ({"cellsize_m": 100}, "config.yaml", "cellsize_m"),
+    ({"preference": {"parcel_aggregation": {"top_n": 5}}}, "config.yaml", "preference"),
+    ({"study_area": {"bbox": BBOX, "nmae": "x"}}, "study_area", "nmae"),
+    ({"study_area": {"box": BBOX}}, "study_area", "box"),
+    ({"paths": {"proccessed": "elsewhere"}}, "paths", "proccessed"),
+    ({"weights": {**DEFAULT_WEIGHTS, "hydrro": 10}}, "weights", "hydrro"),   # not enabled, still a typo
+    ({"weights": {**DEFAULT_WEIGHTS, "solar_pv": 10}}, "weights", "solar_pv"),
+    ({"preferences": {"parcel_agg": {"top_n": 5}}}, "preferences", "parcel_agg"),
+    ({"preferences": {"parcel_aggregation": {"topn": 5}}}, "preferences.parcel_aggregation", "topn"),
+    ({"preferences": {"parcel_aggregation": {"cell_weight": 0.5, "size_weight": 0.5}}},
+     "preferences.parcel_aggregation", "size_weight"),
+])
+def test_unknown_keys_raise_and_list_the_allowed_ones(tmp_path, extra, where, typo):
+    with pytest.raises(ValueError, match=rf"{where}: unknown key\(s\) \['{typo}'\]; allowed keys are \["):
+        load_config(_write(tmp_path, **extra))
+
+
+@pytest.mark.parametrize("where, allowed", [
+    ("config.yaml", ["cell_size_m", "confidence_deductions", "enabled_criteria",
+                     "exclusion_overlap_threshold", "min_parcel_area_acres", "paths",
+                     "preferences", "study_area", "weights", "wind", "working_crs"]),
+    ("study_area", ["bbox", "name"]),
+    ("paths", ["output", "processed", "raw"]),
+    ("weights", ["access", "buildable", "elevation", "hydro", "open_ground", "solar", "wind"]),
+    ("preferences", ["parcel_aggregation"]),
+    ("preferences.parcel_aggregation", ["cell_weight", "top_n"]),
+])
+def test_unknown_key_message_lists_exactly_the_allowed_keys(tmp_path, where, allowed):
+    data = {"study_area": {"bbox": BBOX}}
+    *parents, leaf = where.split(".")
+    if where == "config.yaml":
+        data["oops"] = 1
+    else:
+        block = data
+        for key in parents:
+            block = block.setdefault(key, {})
+        block.setdefault(leaf, {})["oops"] = 1
+    with pytest.raises(ValueError) as e:
+        load_config(_write_raw(tmp_path, yaml.dump(data)))
+    assert str(e.value).endswith(f"allowed keys are {allowed}")
+
+
+@pytest.mark.parametrize("text, message", [
+    ("study_area:\n", "study_area: is empty; it should hold bbox:"),
+    ("study_area: null\n", "study_area: is empty"),
+    ("study_area: [1, 2, 3, 4]\n", "study_area: must be a mapping"),
+    ("paths:\n", "paths: is empty; it should hold raw:, processed: and/or output:"),
+    ("paths: data\n", "paths: must be a mapping"),
+    ("weights:\n", "weights: is empty; it should hold a weight >= 0 per criterion"),
+    ("weights: {}\n", "weights: is empty"),
+    ("preferences:\n  parcel_aggregation:\n", "preferences.parcel_aggregation: is empty; it should hold top_n"),
+    ("preferences:\n  parcel_aggregation: 3\n", "preferences.parcel_aggregation: must be a mapping"),
+    ("preferences: top_n\n", "preferences: must be a mapping"),
+    ("enabled_criteria:\n", "enabled_criteria must be a non-empty list"),
+])
+def test_null_or_non_mapping_blocks_raise_saying_what_they_hold(tmp_path, text, message):
+    bbox = "" if text.startswith("study_area") else f"study_area:\n  bbox: {BBOX}\n"
+    with pytest.raises(ValueError, match=message):
+        load_config(_write_raw(tmp_path, bbox + text))
+
+
+@pytest.mark.parametrize("text", ["preferences:\n", "preferences: {}\n", "preferences: null\n"])
+def test_empty_preferences_block_means_the_defaults(tmp_path, text):
+    # it used to load as None and crash inside score after scored_cells.gpkg was written
+    cfg = load_config(_write_raw(tmp_path, f"study_area:\n  bbox: {BBOX}\n{text}"))
+    assert cfg.preferences == {"parcel_aggregation": {"top_n": 3, "cell_weight": 0.65}}
+
+
+@pytest.mark.parametrize("text", ["", "\n", "# just a comment\n", "---\n"])
+def test_empty_config_file_raises_clearly(tmp_path, text):
+    with pytest.raises(ValueError, match=r"is empty \(or only comments\); it should be a mapping of config keys"):
+        load_config(_write_raw(tmp_path, text))
+
+
+@pytest.mark.parametrize("text", ["- study_area\n- weights\n", "42\n", "study_area\n"])
+def test_non_mapping_config_file_raises_clearly(tmp_path, text):
+    with pytest.raises(ValueError, match="must be a mapping of config keys"):
+        load_config(_write_raw(tmp_path, text))
+
+
+@pytest.mark.parametrize("block, key", [
+    ("paths", "raw"), ("paths", "processed"), ("paths", "output"), ("study_area", "name"),
+])
+@pytest.mark.parametrize("bad", [None, "", "   ", 5])
+def test_blank_or_non_string_paths_and_name_raise_clearly(tmp_path, block, key, bad):
+    data = {"study_area": {"bbox": BBOX}}
+    data.setdefault(block, {})[key] = bad
+    with pytest.raises(ValueError, match=f"{block}.{key} must be a non-empty string"):
+        load_config(_write_raw(tmp_path, yaml.dump(data)))
+
+
+def test_absent_blocks_still_mean_the_defaults(tmp_path):
+    from src.config import Paths
+
+    cfg = load_config(_write_raw(tmp_path, "cell_size_m: 100\n"))
+    assert cfg.study_area == StudyArea(bbox=(360000, 4880000, 410000, 4930000), name="lunenburg")
+    assert cfg.paths == Paths()
+    assert cfg.weights == DEFAULT_WEIGHTS and cfg.enabled_criteria == list(DEFAULT_WEIGHTS)
+
+
+def test_partial_blocks_keep_the_other_defaults(tmp_path):
+    from pathlib import Path
+
+    cfg = load_config(_write(tmp_path, study_area={"bbox": BBOX}, paths={"output": "out2"}))
+    assert cfg.study_area.name == "lunenburg"
+    assert cfg.paths.raw == Path("data/raw") and cfg.paths.output == Path("out2")

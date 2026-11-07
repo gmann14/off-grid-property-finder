@@ -29,6 +29,18 @@ DEFAULT_BBOX = (360000, 4880000, 410000, 4930000)  # Lunenburg region, EPSG:2961
 # the registry. solar and buildable are registered but off by default.
 KNOWN_CRITERIA = (*DEFAULT_WEIGHTS, "solar", "buildable")
 
+# Every key load_config reads. Anything else (a typo such as ``weight:`` or
+# ``min_parcel_area:``) fails instead of silently leaving the default in place.
+_TOP_LEVEL_KEYS = (
+    "study_area", "cell_size_m", "working_crs", "paths", "weights", "enabled_criteria",
+    "confidence_deductions", "exclusion_overlap_threshold", "min_parcel_area_acres",
+    "preferences", "wind",
+)
+_STUDY_AREA_KEYS = ("name", "bbox")
+_PATHS_KEYS = ("raw", "processed", "output")
+_PREFERENCES_KEYS = ("parcel_aggregation",)
+_PARCEL_AGGREGATION_KEYS = ("top_n", "cell_weight")
+
 
 @dataclass
 class StudyArea:
@@ -143,6 +155,40 @@ def _min_parcel_area(value: object) -> float:
     return float(value)
 
 
+def _check_keys(where: str, block: dict, allowed) -> None:
+    unknown = [k for k in block if k not in allowed]
+    if unknown:
+        raise ValueError(
+            f"{where}: unknown key(s) {sorted(unknown, key=str)}; allowed keys are {sorted(allowed)}"
+        )
+
+
+def _block(parent: dict, key: str, allowed, contents: str, where: str = "") -> dict:
+    """``parent[key]`` as a mapping holding only ``allowed`` keys, or {} when
+    the key is absent (its defaults apply). ``key:`` with nothing under it
+    parses as None; that fails here, saying what the block should hold, rather
+    than as a bare AttributeError deep inside a pipeline step."""
+    if key not in parent:
+        return {}
+    value = parent[key]
+    name = f"{where}{key}"
+    if not isinstance(value, dict):
+        problem = "is empty" if value is None else f"must be a mapping, got {value!r}"
+        raise ValueError(
+            f"{name}: {problem}; it should hold {contents} (or delete it to use the defaults)"
+        )
+    _check_keys(name, value, allowed)
+    return value
+
+
+def _text(block: dict, key: str, default: str, where: str) -> str:
+    """A string setting such as ``paths.raw``; a blank ``raw:`` is None."""
+    value = block.get(key, default)
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(f"{where}.{key} must be a non-empty string, got {value!r}")
+    return value
+
+
 def _finite_number(value: object) -> bool:
     """A finite real number that isn't a bool: ``true`` or a quoted ``"0.5"``
     in config.yaml is almost always a typo, so it fails instead of coercing."""
@@ -217,14 +263,16 @@ def _overlap_threshold(value: object) -> float:
     return float(value)
 
 
-def _weights(weights: object) -> dict[str, float]:
-    """``weights``: each a finite number >= 0. A negative or NaN weight gives
-    composite scores outside 0-100, or all NaN."""
-    if not isinstance(weights, dict):
-        raise ValueError(
-            f"weights must map criterion name to a weight >= 0 (known criteria: "
-            f"{list(KNOWN_CRITERIA)}), got {weights!r}"
-        )
+def _weights(raw: dict) -> dict[str, float]:
+    """``weights``: known criterion names, each a finite number >= 0 (absent ->
+    the defaults). A negative or NaN weight gives composite scores outside
+    0-100, or all NaN."""
+    if "weights" not in raw:
+        return dict(DEFAULT_WEIGHTS)
+    contents = f"a weight >= 0 per criterion, e.g. hydro: 40 (known criteria: {list(KNOWN_CRITERIA)})"
+    weights = _block(raw, "weights", KNOWN_CRITERIA, contents)
+    if not weights:
+        raise ValueError(f"weights: is empty; it should hold {contents} (or delete it to use the defaults)")
     for name, weight in weights.items():
         if not _finite_number(weight) or weight < 0:
             raise ValueError(f"weights.{name} must be a finite number >= 0, got {weight!r}")
@@ -262,9 +310,13 @@ def _load_preferences(raw: dict) -> dict:
     """``preferences:`` with ``parcel_aggregation`` range-checked and its
     defaults filled in, so src/score.py's ``.get(...)`` reads validated values.
     ``cell_weight`` outside [0, 1] gives negative parcel scores; ``top_n`` < 1
-    ranks nothing."""
-    prefs = dict(raw)
-    agg = dict(prefs.get("parcel_aggregation", {}))
+    ranks nothing. An empty ``preferences:`` means the defaults; an empty
+    ``parcel_aggregation:`` under it is an error (delete the line instead)."""
+    prefs: dict = {}
+    if raw.get("preferences") is not None:
+        prefs = dict(_block(raw, "preferences", _PREFERENCES_KEYS, "parcel_aggregation:"))
+    agg = dict(_block(prefs, "parcel_aggregation", _PARCEL_AGGREGATION_KEYS,
+                      "top_n: and/or cell_weight:", where="preferences."))
     top_n = agg.get("top_n", PARCEL_TOP_N_CELLS)
     if not _whole_number(top_n) or top_n < 1:
         raise ValueError(
@@ -291,22 +343,32 @@ def load_config(path: str | Path = "config.yaml") -> Config:
     with open(path) as f:
         raw = yaml.safe_load(f)
 
+    if raw is None:
+        raise ValueError(
+            f"{path} is empty (or only comments); it should be a mapping of config keys "
+            f"{sorted(_TOP_LEVEL_KEYS)} (see the repo's config.yaml)"
+        )
+    if not isinstance(raw, dict):
+        raise ValueError(f"{path} must be a mapping of config keys, got {raw!r}")
+    _check_keys(str(path), raw, _TOP_LEVEL_KEYS)
+
     working_crs = _working_crs(raw.get("working_crs", WORKING_CRS))
 
-    study_area_raw = raw.get("study_area", {})
+    study_area_raw = _block(raw, "study_area", _STUDY_AREA_KEYS,
+                            "bbox: [xmin, ymin, xmax, ymax] in the working CRS's metres, and optionally name:")
     study_area = StudyArea(
         bbox=_bbox(study_area_raw.get("bbox", list(DEFAULT_BBOX)), working_crs),
-        name=study_area_raw.get("name", "lunenburg"),
+        name=_text(study_area_raw, "name", "lunenburg", "study_area"),
     )
 
-    paths_raw = raw.get("paths", {})
+    paths_raw = _block(raw, "paths", _PATHS_KEYS, "raw:, processed: and/or output: directories")
     paths = Paths(
-        raw=Path(paths_raw.get("raw", "data/raw")),
-        processed=Path(paths_raw.get("processed", "data/processed")),
-        output=Path(paths_raw.get("output", "output")),
+        raw=Path(_text(paths_raw, "raw", "data/raw", "paths")),
+        processed=Path(_text(paths_raw, "processed", "data/processed", "paths")),
+        output=Path(_text(paths_raw, "output", "output", "paths")),
     )
 
-    weights = _weights(raw.get("weights", dict(DEFAULT_WEIGHTS)))
+    weights = _weights(raw)
     enabled = _enabled_criteria(raw.get("enabled_criteria", list(weights)), weights)
 
     wind = _load_wind(raw.get("wind"))
@@ -325,6 +387,6 @@ def load_config(path: str | Path = "config.yaml") -> Config:
             raw.get("exclusion_overlap_threshold", DEFAULT_EXCLUSION_OVERLAP_THRESHOLD)
         ),
         min_parcel_area_acres=_min_parcel_area(raw.get("min_parcel_area_acres", 1.0)),
-        preferences=_load_preferences(raw.get("preferences", {})),
+        preferences=_load_preferences(raw),
         wind=wind,
     )
