@@ -65,17 +65,38 @@ def test_run_visualize_minimal_produces_map(tmp_path):
 
     # Score band layers must be present (this is exactly the kind of thing
     # that silently rotted before — band names hardcoded in visualize.py).
+    # Assert on the layer-control entries, not the raw text: "Excluded" is
+    # also in the legend, which let a never-drawn excluded layer pass before.
+    import re
+    from src.visualize import EXCLUDED_LAYER_NAME
     for band in ["Excellent (80-100)", "Good (60-79)", "Fair (40-59)",
-                 "Poor (20-39)", "Unsuitable (0-19)", "Excluded"]:
-        assert band in html
+                 "Poor (20-39)", "Unsuitable (0-19)", EXCLUDED_LAYER_NAME]:
+        assert re.search(re.escape(f'"{band}"') + r"\s*:\s*geo_json_", html), band
 
 
 def test_run_visualize_missing_scored_cells_does_not_crash(tmp_path, caplog):
     cfg, output = _cfg(tmp_path)
     with caplog.at_level(logging.ERROR):
-        run_visualize(cfg, logging.getLogger("test"))
+        assert run_visualize(cfg, logging.getLogger("test")) is False
     assert not (output / "map.html").exists()
     assert any("Scored cells not found" in r.message for r in caplog.records)
+
+
+def test_run_visualize_refuses_stale_processed_data(tmp_path):
+    import json
+
+    import pytest
+
+    from src.manifest import MANIFEST_FILENAME, StaleProcessedDataError
+
+    cfg, output = _cfg(tmp_path)
+    _scored_cells().to_file(output / "scored_cells.gpkg", driver="GPKG")
+    cfg.paths.processed.mkdir()
+    (cfg.paths.processed / MANIFEST_FILENAME).write_text(json.dumps(
+        {"study_area_bbox": [0, 0, 1, 1], "cell_size_m": 250, "working_crs": cfg.working_crs}))
+    with pytest.raises(StaleProcessedDataError):
+        run_visualize(cfg, logging.getLogger("test"))
+    assert not (output / "map.html").exists()
 
 
 def test_run_visualize_includes_optional_layers_when_present(tmp_path):
@@ -175,3 +196,34 @@ def test_formula_panel_defaults_match_config_yaml():
         assert pct in html
     assert "0.65 &times; mean(top 3 cells) + 0.35 &times;" in html
     assert "under 1 acre of land" in html
+
+
+def test_excluded_cells_are_drawn_dissolved_by_sorted_reason(tmp_path):
+    """Excluded cells read back from GPKG have score NaN (not None); they must
+    still reach the map, grouped by reason regardless of the reasons' order."""
+    import json
+    import re
+
+    cfg, output = _cfg(tmp_path)
+    cells = _scored_cells()
+    extra = cells.iloc[[5, 5]].copy()
+    extra.geometry = [box(380000, 4901000, 380100, 4901100), box(380100, 4901000, 380200, 4901100)]
+    cells = gpd.GeoDataFrame(
+        __import__("pandas").concat([cells, extra], ignore_index=True), crs=CRS)
+    cells["exclusion_reasons"] = [None] * 5 + ["flood_zone; water", "water; flood_zone", "protected_area"]
+    cells.to_file(output / "scored_cells.gpkg", driver="GPKG")
+
+    assert run_visualize(cfg, logging.getLogger("test")) is True
+    html = (output / "map.html").read_text()
+    blobs = re.findall(r'geo_json_[0-9a-f]+_add\((\{.*?\})\);', html, re.S)
+    reasons = sorted(
+        f["properties"]["reasons"] for b in blobs for f in json.loads(b)["features"]
+        if "reasons" in f["properties"])
+    assert reasons == ["flood_zone; water", "protected_area"]
+
+
+def test_score_color_treats_nan_as_no_score():
+    from src.visualize import _score_color, _score_opacity
+
+    assert _score_color(float("nan")) == _score_color(None) == "#808080"
+    assert _score_opacity(float("nan")) == _score_opacity(None)

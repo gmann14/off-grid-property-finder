@@ -100,3 +100,15 @@ def test_cli_snapshot_writes_results(runner, tmp_path):
     assert result.exit_code == 0, result.output
     assert sorted(p.name for p in (tmp_path / "res").iterdir()) == [
         "ranked_pids.csv", "severance_candidates.csv", "top_land_only.csv"]
+
+
+def test_cli_visualize_exits_1_without_scored_cells(runner, tmp_path):
+    cfg = _write_config(tmp_path)
+    result = runner.invoke(cli, ["--config", str(cfg), "visualize"])
+    assert result.exit_code == 1
+
+
+def test_cli_ingest_parcels_exits_1_when_nothing_is_ingested(runner, tmp_path):
+    cfg = _write_config(tmp_path)
+    result = runner.invoke(cli, ["--config", str(cfg), "ingest-parcels"])
+    assert result.exit_code == 1

@@ -70,6 +70,7 @@ def ingest_parcels_cmd(ctx: click.Context, from_rest: bool, layer: int | None, s
             "Parcel ingestion produced no output. Place a parcel file in "
             "data/raw/parcels/ or pass --from-rest."
         )
+        raise SystemExit(1)
     else:
         logger.info("Parcels ready: %s. Re-run `score` to produce ranked PIDs.", path)
 
@@ -135,11 +136,18 @@ def snapshot(ctx: click.Context, out_dir: str) -> None:
 @click.pass_context
 def visualize(ctx: click.Context) -> None:
     """Generate an interactive Folium map from scored output."""
+    from src.manifest import StaleProcessedDataError
     from src.visualize import run_visualize
 
     cfg = ctx.obj["config"]
     logger = ctx.obj["logger"]
-    run_visualize(cfg, logger)
+    try:
+        ok = run_visualize(cfg, logger)
+    except StaleProcessedDataError as e:
+        logger.error(str(e))
+        raise SystemExit(1)
+    if not ok:
+        raise SystemExit(1)
 
 
 @cli.command()

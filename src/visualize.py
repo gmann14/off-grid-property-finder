@@ -6,6 +6,7 @@ from pathlib import Path
 
 import geopandas as gpd
 import numpy as np
+import pandas as pd
 
 from src.config import Config
 
@@ -13,8 +14,8 @@ logger = logging.getLogger("property_finder")
 
 
 def _score_color(score: float | None) -> str:
-    """Map a 0-100 score to a color for the map."""
-    if score is None:
+    """Map a 0-100 score to a color for the map (grey for no score: None or NaN)."""
+    if score is None or pd.isna(score):
         return "#808080"
     if score >= 80:
         return "#1a9641"
@@ -29,7 +30,7 @@ def _score_color(score: float | None) -> str:
 
 def _score_opacity(score: float | None) -> float:
     """Higher scores get more opaque so top candidates stand out."""
-    if score is None:
+    if score is None or pd.isna(score):
         return 0.15
     if score >= 80:
         return 0.75
@@ -468,6 +469,52 @@ def _add_parcels(m, parcels_path: Path):
     logger.info("Added %d scored parcels to map", len(parcels))
 
 
+EXCLUDED_LAYER_NAME = "Excluded (protected, flood or water)"
+
+
+def _add_excluded_cells(m, candidates_wgs: gpd.GeoDataFrame) -> None:
+    """Draw excluded cells (no score) as one grey layer, off by default.
+
+    The cells are dissolved by exclusion reason, so ~19k squares become a few
+    multipolygons: the map shows where and why land was excluded without
+    carrying each cell. Reasons are sorted so "water; flood_zone" and
+    "flood_zone; water" land in one group.
+    """
+    import folium
+
+    if "score" not in candidates_wgs.columns:
+        return
+    excluded = candidates_wgs[candidates_wgs["score"].isna()]
+    if "status" in excluded.columns:
+        excluded = excluded[excluded["status"].fillna("excluded") == "excluded"]
+    if excluded.empty:
+        return
+    if "exclusion_reasons" in excluded.columns:
+        reasons = excluded["exclusion_reasons"].fillna("").map(
+            lambda r: "; ".join(sorted(x.strip() for x in str(r).split(";") if x.strip())) or "excluded")
+    else:
+        reasons = pd.Series("excluded", index=excluded.index)
+    dissolved = (
+        gpd.GeoDataFrame({"reasons": reasons.values, "cells": 1},
+                         geometry=excluded.geometry.values, crs=excluded.crs)
+        .dissolve(by="reasons", aggfunc={"cells": "sum"})
+        .reset_index()
+    )
+    dissolved.geometry = dissolved.geometry.simplify(tolerance=0.00002)
+    geojson = json.loads(dissolved.to_json())
+    _truncate_coords(geojson, precision=5)
+    folium.GeoJson(
+        geojson,
+        name=EXCLUDED_LAYER_NAME,
+        show=False,
+        style_function=lambda _f: {"fillColor": "#808080", "color": "#808080",
+                                   "weight": 0.3, "fillOpacity": 0.35},
+        tooltip=folium.GeoJsonTooltip(fields=["reasons", "cells"],
+                                      aliases=["Excluded for", "Cells"], localize=True),
+    ).add_to(m)
+    logger.info("Added %d excluded cells to map (%d reason groups)", len(excluded), len(dissolved))
+
+
 # Label, colour and one-line description for each criterion in the formula panel.
 _CRITERION_INFO = {
     "hydro": ("Micro-Hydro", "#2166ac", "Nearby stream, flow (drainage), head"),
@@ -537,13 +584,22 @@ def _formula_panel_html(config: Config) -> str:
     """
 
 
-def run_visualize(config: Config, logger: logging.Logger) -> None:
-    """Generate an interactive Folium map from scored output."""
+def run_visualize(config: Config, logger: logging.Logger) -> bool:
+    """Generate an interactive Folium map from scored output.
+
+    Returns False (after logging why) when there is nothing to map or folium is
+    missing, so the CLI can exit non-zero. Raises StaleProcessedDataError when
+    data/processed/ was built from a different config, as ``score`` does.
+    """
+    from src.manifest import verify_manifest_fresh
+
     try:
         import folium
     except ImportError:
         logger.error("folium not installed. Install with: pip install folium")
-        return
+        return False
+
+    verify_manifest_fresh(config)
 
     output = config.paths.output
     processed = config.paths.processed
@@ -551,7 +607,7 @@ def run_visualize(config: Config, logger: logging.Logger) -> None:
 
     if not scored_path.exists():
         logger.error("Scored cells not found at %s. Run 'score' first.", scored_path)
-        return
+        return False
 
     candidates = gpd.read_file(scored_path)
     logger.info("Loaded %d scored cells for visualization", len(candidates))
@@ -603,12 +659,11 @@ def run_visualize(config: Config, logger: logging.Logger) -> None:
 
     # --- Score band layers (only Excellent on by default) ---
     band_defs = [
-        ("Excellent (80-100)", lambda s: s is not None and s >= 80, True),
-        ("Good (60-79)", lambda s: s is not None and 60 <= s < 80, False),
-        ("Fair (40-59)", lambda s: s is not None and 40 <= s < 60, False),
-        ("Poor (20-39)", lambda s: s is not None and 20 <= s < 40, False),
-        ("Unsuitable (0-19)", lambda s: s is not None and s < 20, False),
-        ("Excluded", lambda s: s is None, False),
+        ("Excellent (80-100)", lambda s: pd.notna(s) and s >= 80, True),
+        ("Good (60-79)", lambda s: pd.notna(s) and 60 <= s < 80, False),
+        ("Fair (40-59)", lambda s: pd.notna(s) and 40 <= s < 60, False),
+        ("Poor (20-39)", lambda s: pd.notna(s) and 20 <= s < 40, False),
+        ("Unsuitable (0-19)", lambda s: pd.notna(s) and s < 20, False),
     ]
 
     # Columns to include in GeoJSON (drop heavy/unnecessary ones)
@@ -647,6 +702,8 @@ def run_visualize(config: Config, logger: logging.Logger) -> None:
             ),
         )
         layer.add_to(m)
+
+    _add_excluded_cells(m, candidates_wgs)
 
     # --- Study area boundary ---
     _add_study_area_boundary(m, config)
@@ -733,3 +790,4 @@ def run_visualize(config: Config, logger: logging.Logger) -> None:
     map_path = output / "map.html"
     m.save(str(map_path))
     logger.info("Saved interactive map: %s", map_path)
+    return True
