@@ -177,7 +177,7 @@ def test_failing_scorer_fails_the_run_naming_the_criterion():
         {"status": ["eligible"]}, geometry=[box(0, 0, 1, 1)], crs="EPSG:2961",
     )
     cfg = Config(
-        study_area=StudyArea(bbox=(0, 0, 1, 1)),
+        study_area=StudyArea(bbox=(380000, 4900000, 381000, 4901000)),
         weights={"_test_ok": 50, "_test_broken": 50},
         enabled_criteria=["_test_ok", "_test_broken"],
     )
@@ -199,7 +199,7 @@ def test_composite_without_status_column_does_not_crash():
 
     grid = gpd.GeoDataFrame(geometry=[box(0, 0, 1, 1)], crs="EPSG:2961")
     cfg = Config(
-        study_area=StudyArea(bbox=(0, 0, 1, 1)),
+        study_area=StudyArea(bbox=(380000, 4900000, 381000, 4901000)),
         weights={"_test_d": 100},
         enabled_criteria=["_test_d"],
     )
