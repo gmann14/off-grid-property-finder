@@ -5,6 +5,8 @@ Outputs standardized GPKG/GeoTIFF files in the processed directory.
 """
 
 import logging
+import os
+from contextlib import contextmanager
 from pathlib import Path
 
 import geopandas as gpd
@@ -16,6 +18,31 @@ from src.config import Config
 from src.constants import WORKING_CRS
 
 logger = logging.getLogger("property_finder")
+
+
+@contextmanager
+def _atomic_output(out_path: Path):
+    """Yield a temp path beside ``out_path`` to write to; when the block
+    finishes, the temp file replaces ``out_path`` in one rename. If the write
+    fails (disk full, interrupted), the temp file is removed and ``out_path``
+    is untouched, so a partial file can never be cached by the
+    skip-if-exists checks."""
+    tmp_path = out_path.with_name(f"{out_path.stem}.partial{out_path.suffix}")
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path.unlink(missing_ok=True)
+    try:
+        yield tmp_path
+        os.replace(tmp_path, out_path)
+    finally:
+        tmp_path.unlink(missing_ok=True)
+
+
+def _write_gpkg(gdf: gpd.GeoDataFrame, out_path: Path) -> None:
+    """Write ``gdf`` to ``out_path`` as a GPKG via `_atomic_output`. The layer
+    is named after ``out_path`` (as a direct write would name it), not the
+    temp file."""
+    with _atomic_output(out_path) as tmp_path:
+        gdf.to_file(tmp_path, driver="GPKG", layer=out_path.stem)
 
 
 def _bbox_to_geodataframe(bbox: tuple, crs: str) -> gpd.GeoDataFrame:
@@ -219,8 +246,9 @@ def ingest_dem(config: Config) -> Path | None:
         fill_mosaic_path.unlink(missing_ok=True)
 
     out_meta.update(compress="lzw")
-    with rasterio.open(out_path, "w", **out_meta) as dst:
-        dst.write(out_image)
+    with _atomic_output(out_path) as tmp_path:
+        with rasterio.open(tmp_path, "w", **out_meta) as dst:
+            dst.write(out_image)
 
     logger.info("DEM processed: %s (%dx%d)", out_path, out_meta["width"], out_meta["height"])
     return out_path
@@ -230,43 +258,43 @@ def _reproject_clip_dem(src_path: Path, processed: Path, bbox: tuple, working_cr
     """Reproject ``src_path`` (bilinear) to the working CRS and crop it to the
     bbox. Returns ``(image, meta)``."""
     bbox_geom = box(*bbox)
+    reproj_path = processed / "dem_reproj.tif"
+    try:
+        with rasterio.open(src_path) as src:
+            # Reproject to working CRS
+            transform, width, height = calculate_default_transform(
+                src.crs, working_crs, src.width, src.height, *src.bounds
+            )
+            kwargs = src.meta.copy()
+            kwargs.update(crs=working_crs, transform=transform, width=width, height=height)
 
-    with rasterio.open(src_path) as src:
-        # Reproject to working CRS
-        transform, width, height = calculate_default_transform(
-            src.crs, working_crs, src.width, src.height, *src.bounds
-        )
-        kwargs = src.meta.copy()
-        kwargs.update(crs=working_crs, transform=transform, width=width, height=height)
+            # Reproject full raster first
+            reproj_path.parent.mkdir(parents=True, exist_ok=True)
+            with rasterio.open(reproj_path, "w", **kwargs) as dst:
+                for i in range(1, src.count + 1):
+                    reproject(
+                        source=rasterio.band(src, i),
+                        destination=rasterio.band(dst, i),
+                        src_transform=src.transform,
+                        src_crs=src.crs,
+                        dst_transform=transform,
+                        dst_crs=working_crs,
+                        resampling=Resampling.bilinear,
+                    )
 
-        # Reproject full raster first
-        reproj_path = processed / "dem_reproj.tif"
-        reproj_path.parent.mkdir(parents=True, exist_ok=True)
-        with rasterio.open(reproj_path, "w", **kwargs) as dst:
-            for i in range(1, src.count + 1):
-                reproject(
-                    source=rasterio.band(src, i),
-                    destination=rasterio.band(dst, i),
-                    src_transform=src.transform,
-                    src_crs=src.crs,
-                    dst_transform=transform,
-                    dst_crs=working_crs,
-                    resampling=Resampling.bilinear,
-                )
-
-    # Clip to study area
-    from rasterio.mask import mask as rasterio_mask
-    with rasterio.open(reproj_path) as src:
-        out_image, out_transform = rasterio_mask(src, [bbox_geom], crop=True)
-        out_meta = src.meta.copy()
-        out_meta.update(
-            height=out_image.shape[1],
-            width=out_image.shape[2],
-            transform=out_transform,
-        )
-
-    # Clean up intermediate
-    reproj_path.unlink(missing_ok=True)
+        # Clip to study area
+        from rasterio.mask import mask as rasterio_mask
+        with rasterio.open(reproj_path) as src:
+            out_image, out_transform = rasterio_mask(src, [bbox_geom], crop=True)
+            out_meta = src.meta.copy()
+            out_meta.update(
+                height=out_image.shape[1],
+                width=out_image.shape[2],
+                transform=out_transform,
+            )
+    finally:
+        # Clean up intermediate, also when the reprojection or clip fails
+        reproj_path.unlink(missing_ok=True)
     return out_image, out_meta
 
 
@@ -350,7 +378,7 @@ def ingest_streams(config: Config) -> Path | None:
     gdf = gpd.clip(gdf, bbox_geom)
 
     processed.mkdir(parents=True, exist_ok=True)
-    gdf.to_file(out_path, driver="GPKG")
+    _write_gpkg(gdf, out_path)
     logger.info("Streams processed: %s (%d features)", out_path, len(gdf))
     return out_path
 
@@ -376,7 +404,7 @@ def ingest_roads_from_osm(config: Config) -> Path | None:
                 bbox_geom = box(*config.study_area.bbox)
                 gdf = gdf[gdf.intersects(bbox_geom)].copy()
                 processed.mkdir(parents=True, exist_ok=True)
-                gdf.to_file(out_path, driver="GPKG")
+                _write_gpkg(gdf, out_path)
                 logger.info("Roads processed from shapefile: %s (%d features)", out_path, len(gdf))
                 return out_path
         logger.warning("No road data found in %s", raw / "roads")
@@ -400,7 +428,7 @@ def ingest_roads_from_osm(config: Config) -> Path | None:
     gdf = gpd.clip(gdf, bbox_geom)
 
     processed.mkdir(parents=True, exist_ok=True)
-    gdf.to_file(out_path, driver="GPKG")
+    _write_gpkg(gdf, out_path)
     logger.info("Roads processed: %s (%d features)", out_path, len(gdf))
     return out_path
 
@@ -434,7 +462,7 @@ def ingest_buildings(config: Config) -> Path | None:
     gdf = gdf[gdf.intersects(bbox_geom)].copy()
 
     processed.mkdir(parents=True, exist_ok=True)
-    gdf.to_file(out_path, driver="GPKG")
+    _write_gpkg(gdf, out_path)
     logger.info("Buildings processed: %s (%d features)", out_path, len(gdf))
     return out_path
 
@@ -467,7 +495,7 @@ def ingest_land_cover(config: Config) -> Path | None:
     gdf = gdf[gdf.intersects(bbox_geom)].copy()
 
     processed.mkdir(parents=True, exist_ok=True)
-    gdf.to_file(out_path, driver="GPKG")
+    _write_gpkg(gdf, out_path)
     logger.info("Land cover processed: %s (%d features)", out_path, len(gdf))
     return out_path
 
@@ -498,7 +526,7 @@ def ingest_crown_land(config: Config) -> Path | None:
     gdf = gdf[gdf.intersects(bbox_geom)].copy()
 
     processed.mkdir(parents=True, exist_ok=True)
-    gdf.to_file(out_path, driver="GPKG")
+    _write_gpkg(gdf, out_path)
     logger.info("Crown land processed: %s (%d features)", out_path, len(gdf))
     return out_path
 
@@ -534,7 +562,7 @@ def ingest_protected_areas(config: Config) -> Path | None:
         return None
 
     processed.mkdir(parents=True, exist_ok=True)
-    gdf.to_file(out_path, driver="GPKG")
+    _write_gpkg(gdf, out_path)
     logger.info("Protected areas processed: %s (%d features)", out_path, len(gdf))
     return out_path
 
@@ -891,7 +919,7 @@ def ingest_parcels(
         )
 
     processed.mkdir(parents=True, exist_ok=True)
-    gdf.to_file(out_path, driver="GPKG")
+    _write_gpkg(gdf, out_path)
     logger.info(
         "Parcels processed: %s (%d parcels, %d with PID)",
         out_path, len(gdf), int((gdf.get("PID", "") != "").sum()),
@@ -1139,8 +1167,6 @@ def ingest_wind(config: Config) -> Path | None:
     the guards fail, any existing wind.tif and its record are left exactly as
     they were, and None is returned with the reason logged.
     """
-    import os
-
     import numpy as np
 
     from src.constants import (
@@ -1217,17 +1243,13 @@ def ingest_wind(config: Config) -> Path | None:
             "crs": working_crs, "transform": dst_transform, "nodata": WIND_NODATA, "compress": "lzw"}
     # Write to a temp file and rename, so a failed write can't leave a partial
     # wind.tif (or clobber the previous one) that skip-if-exists would cache.
-    tmp_path = out_path.with_name(out_path.stem + ".partial.tif")
-    try:
+    with _atomic_output(out_path) as tmp_path:
         with rasterio.open(tmp_path, "w", **meta) as d:
             d.write(v_hub, 1)
             d.update_tags(
                 hub_height_m=f"{hub:g}", method=WIND_INGEST_METHOD,
                 gwa_layers=";".join(f"{lvl}m={url}" for lvl, url in sorted(config.wind.gwa_layers.items())),
             )
-        os.replace(tmp_path, out_path)
-    finally:
-        tmp_path.unlink(missing_ok=True)
     # Record only after the swap: a crash in between leaves a new file with the
     # old record, which `score` refuses (safe), never the reverse.
     record_layer(config, "wind")
@@ -1266,7 +1288,7 @@ def ingest_flood(config: Config) -> Path | None:
         return None
 
     processed.mkdir(parents=True, exist_ok=True)
-    gdf.to_file(out_path, driver="GPKG")
+    _write_gpkg(gdf, out_path)
     if gdf.empty:
         # Export succeeded and genuinely found no flooded pixels in this bbox —
         # cache that (empty) result so confidence isn't penalized for "no flood
@@ -1311,7 +1333,7 @@ def ingest_waterbodies(config: Config) -> Path | None:
     gdf = gdf[gdf.geometry.geom_type.isin(("Polygon", "MultiPolygon"))].copy()
 
     processed.mkdir(parents=True, exist_ok=True)
-    gdf.to_file(out_path, driver="GPKG")
+    _write_gpkg(gdf, out_path)
     logger.info("Waterbodies processed: %s (%d features)", out_path, len(gdf))
     return out_path
 
@@ -1357,7 +1379,7 @@ def ingest_civic(config: Config) -> Path | None:
         return None
 
     processed.mkdir(parents=True, exist_ok=True)
-    gdf.to_file(out_path, driver="GPKG")
+    _write_gpkg(gdf, out_path)
     logger.info("Civic addresses processed: %s (%d points)", out_path, len(gdf))
     return out_path
 

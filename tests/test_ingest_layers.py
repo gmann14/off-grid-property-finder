@@ -50,6 +50,36 @@ def test_ingest_civic_missing_returns_none(tmp_path):
     assert not (cfg.paths.processed / "civic.gpkg").exists()
 
 
+def _fail_writes_after_creating_file(monkeypatch):
+    """Make GeoDataFrame.to_file create its target and then fail, as a full
+    disk or a killed process does part-way through a write."""
+    def to_file(self, filename, *args, **kwargs):
+        with open(filename, "wb") as fh:
+            fh.write(b"SQLite format 3\x00 truncated")
+        raise OSError(28, "No space left on device")
+    monkeypatch.setattr(gpd.GeoDataFrame, "to_file", to_file)
+
+
+def test_failed_vector_write_is_not_cached(tmp_path, monkeypatch):
+    """A write that fails part-way must not leave the output in place: every
+    step skips when its output exists, so a partial file would be used forever."""
+    cfg = _cfg(tmp_path)
+    civic_dir = cfg.paths.raw / "civic"
+    civic_dir.mkdir(parents=True)
+    _points([(XMIN + 100, YMIN + 100)], civic_no=[1]).to_file(civic_dir / "civic.gpkg", driver="GPKG")
+
+    with monkeypatch.context() as m:
+        _fail_writes_after_creating_file(m)
+        with pytest.raises(OSError):
+            ingest_civic(cfg)
+    assert not (cfg.paths.processed / "civic.gpkg").exists()
+    assert not list(cfg.paths.processed.glob("*partial*"))
+
+    out = ingest_civic(cfg)   # the next run rebuilds instead of skipping
+    assert len(gpd.read_file(out)) == 1
+    assert gpd.read_file(out, layer="civic").shape[0] == 1   # layer keeps its name
+
+
 def test_run_ingest_runs_the_civic_step(tmp_path, monkeypatch):
     """run_ingest must ingest civic addresses: scoring/access.py reads
     processed/civic.gpkg (a civic address in a cell = access 100)."""

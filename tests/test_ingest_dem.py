@@ -119,6 +119,65 @@ def test_partial_dem_without_fill_warns_with_covered_share(tmp_path, caplog):
     assert any("50.0% of the study area" in m for m in warnings), warnings
 
 
+# --- failed writes are not cached -------------------------------------------
+
+def test_failed_dem_write_is_not_cached(tmp_path, monkeypatch):
+    """A dem.tif whose write fails part-way (disk full) must not be left in
+    place: ingest skips when dem.tif exists, so it would be used forever."""
+    from pathlib import Path
+
+    import rasterio.errors
+
+    cfg = _cfg(tmp_path)
+    _write_tile(cfg.paths.raw / "hrdem" / "tile.tif", FULL, 10.0)
+    real_open = rasterio.open
+
+    class _FailingWriter:
+        def __init__(self, ds):
+            self.ds = ds
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            self.ds.close()
+            return False
+
+        def write(self, *args, **kwargs):
+            raise rasterio.errors.RasterioIOError("No space left on device")
+
+    def flaky_open(fp, mode="r", *args, **kwargs):
+        ds = real_open(fp, mode, *args, **kwargs)
+        if mode == "w" and Path(fp).name.startswith("dem.") :
+            return _FailingWriter(ds)   # the header is on disk; the data never arrives
+        return ds
+
+    with monkeypatch.context() as m:
+        m.setattr(rasterio, "open", flaky_open)
+        with pytest.raises(rasterio.errors.RasterioIOError):
+            ingest_dem(cfg)
+    assert not (cfg.paths.processed / "dem.tif").exists()
+    assert not list(cfg.paths.processed.glob("*.tif"))   # no partial, no dem_reproj.tif
+
+    out = ingest_dem(cfg)
+    assert _sample(out, XMIN + 100, YMIN + 100) == 10.0
+
+
+def test_dem_reproj_intermediate_removed_when_clip_fails(tmp_path, monkeypatch):
+    import rasterio.mask
+
+    cfg = _cfg(tmp_path)
+    _write_tile(cfg.paths.raw / "hrdem" / "tile.tif", FULL, 10.0)
+
+    def boom(*args, **kwargs):
+        raise ValueError("clip failed")
+
+    monkeypatch.setattr(rasterio.mask, "mask", boom)
+    with pytest.raises(ValueError):
+        ingest_dem(cfg)
+    assert not (cfg.paths.processed / "dem_reproj.tif").exists()
+
+
 # --- single-file path: byte-identical to the original implementation -------
 
 def _original_ingest_dem(src_path, out_path, bbox, working_crs):
