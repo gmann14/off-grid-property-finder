@@ -43,6 +43,25 @@ FLAG_ORDER = (
 _SOLAR_SCORE_COLS = ("score_open_ground", "score_solar", "score_buildable")
 
 
+def confidence_band(confidence: pd.Series) -> pd.Series:
+    """``high`` / ``medium`` / ``low`` per CONFIDENCE_BANDS (None where NaN).
+
+    Assigned in reverse so the FIRST matching entry in CONFIDENCE_BANDS wins
+    even if the ranges ever overlap; later assignments overwrite earlier ones.
+    """
+    bands = pd.Series("low", index=confidence.index, dtype="object")
+    for low, high, label in reversed(CONFIDENCE_BANDS):
+        bands[(confidence >= low) & (confidence <= high)] = label
+    bands[confidence.isna()] = None
+    return bands
+
+
+def order_flags(flags) -> list[str]:
+    """Distinct cell flags in ``FLAG_ORDER``; any other flag follows, alphabetically."""
+    rank = {f: i for i, f in enumerate(FLAG_ORDER)}
+    return sorted(set(flags), key=lambda f: (rank.get(f, len(rank)), f))
+
+
 def _deduction(deductions: dict, key: str) -> float | None:
     """``deductions[key]``, else the src.constants default, else None."""
     amount = deductions.get(key, CONFIDENCE_DEDUCTIONS.get(key))
@@ -151,13 +170,7 @@ def compute_confidence(
     confidence = confidence.clip(lower=0)
     candidates["confidence"] = confidence
 
-    # Assign bands — reversed so the FIRST matching entry in CONFIDENCE_BANDS
-    # wins (matches the old break-on-first-match loop) even if a custom config
-    # ever supplies overlapping ranges; later assignments overwrite earlier ones.
-    bands = pd.Series("low", index=candidates.index, dtype="object")
-    for low, high, label in reversed(CONFIDENCE_BANDS):
-        bands[(confidence >= low) & (confidence <= high)] = label
-    candidates["confidence_band"] = bands
+    candidates["confidence_band"] = confidence_band(confidence)
 
     # Null out confidence for excluded cells (no status column = all eligible)
     excluded = candidates.get("status", pd.Series("eligible", index=candidates.index)) == "excluded"

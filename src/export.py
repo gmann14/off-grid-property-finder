@@ -23,6 +23,14 @@ PARCEL_CSV_COLUMNS = [
     "n_cells", "area_acres", "land_acres", "water_share", "parcel_type", "n_buildings",
     "severance_candidate", "flags",
 ]
+# Written after latitude/longitude, so the columns above keep their positions:
+# the confidence of the top-N cells the parcel score rests on, and the
+# per-criterion means over those cells (cell_score = Σ weight × top_<criterion>).
+PARCEL_CSV_EXTRA_COLUMNS = [
+    "confidence", "confidence_band",
+    "top_hydro", "top_access", "top_open_ground", "top_wind", "top_elevation",
+    "top_solar", "top_buildable",  # legacy criteria, present only if enabled
+]
 
 
 def export_results(candidates: gpd.GeoDataFrame, output_dir: Path) -> None:
@@ -111,6 +119,9 @@ def export_ranked_parcels(parcels: gpd.GeoDataFrame, output_dir: Path) -> None:
         csv_df["longitude"] = centroids.x
     except Exception:
         logger.warning("Could not compute WGS84 centroids for parcel CSV export")
+    for col in PARCEL_CSV_EXTRA_COLUMNS:
+        if col in scored.columns:
+            csv_df[col] = scored[col]
 
     csv_path = output_dir / "ranked_parcels.csv"
     csv_df.to_csv(csv_path, index=False)

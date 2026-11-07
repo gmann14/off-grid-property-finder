@@ -90,6 +90,25 @@ def test_export_empty_geodataframe(tmp_path):
     assert (tmp_path / "scored_cells.csv").exists()
 
 
+def test_parcel_csv_adds_confidence_and_top_criteria_after_the_existing_columns(tmp_path):
+    """The new parcel columns come after latitude/longitude, so the existing
+    columns keep their positions for anything reading the CSV by position."""
+    from src.export import PARCEL_CSV_COLUMNS
+
+    parcels = gpd.GeoDataFrame(
+        {"PID": ["60010001"], "score": [70.0], "rank": [1], "flags": [""],
+         "top_hydro": [80.0], "confidence_band": ["high"], "confidence": [85.0],
+         "top_access": [50.0]},
+        geometry=[box(380000, 4900000, 380250, 4900250)],
+        crs="EPSG:2961",
+    )
+    export_ranked_parcels(parcels, tmp_path)
+    cols = pd.read_csv(tmp_path / "ranked_parcels.csv").columns.tolist()
+    existing = [c for c in PARCEL_CSV_COLUMNS if c in parcels.columns]
+    assert cols == existing + ["latitude", "longitude",
+                               "confidence", "confidence_band", "top_hydro", "top_access"]
+
+
 def test_export_without_status_column_treats_cells_as_eligible(tmp_path):
     """Regression: ``candidates[candidates.get("status") != "excluded"]`` is
     ``candidates[True]`` when the column is missing, a KeyError."""

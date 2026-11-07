@@ -243,6 +243,62 @@ def test_aggregate_minimum_area_off_by_default():
     assert result.loc["B", "flags"] == ""
 
 
+def _four_cells_one_parcel():
+    """One parcel over four cells; the 4th-best cell has the worst confidence
+    and a flag of its own, and the 2nd and 3rd tie on score."""
+    candidates = gpd.GeoDataFrame(
+        {
+            "status": ["eligible"] * 4,
+            "score_hydro": [100.0, 60.0, 40.0, 0.0],
+            "score_access": [50.0, 20.0, 70.0, 20.0],
+            "score_allrounder": [70.0, 30.0, 50.0, 1.0],
+            "confidence": [100.0, 85.0, 70.0, 40.0],
+            "flags": ["", "access_unverified",
+                      "wind_exposure_proxy_only; access_unverified", "coastal_low_elevation"],
+        },
+        geometry=[box(250 * i, 0, 250 * (i + 1), 250) for i in range(4)],
+        crs="EPSG:2961",
+    )
+    candidates["score"] = 0.6 * candidates["score_hydro"] + 0.4 * candidates["score_access"]
+    parcels = gpd.GeoDataFrame({"PID": ["P"]}, geometry=[box(0, 0, 1000, 250)], crs="EPSG:2961")
+    return candidates, parcels
+
+
+def test_parcel_carries_confidence_and_flags_of_its_top_cells():
+    """Regression: parcels had no confidence and dropped the flags of the cells
+    they rest on (SPEC §2 and §4.4 say to preserve both)."""
+    candidates, parcels = _four_cells_one_parcel()
+    result = aggregate_to_parcels(candidates, parcels, top_n=3).iloc[0]
+    # cells scored 80, 44, 52, 8: the top 3 are cells 0, 2, 1
+    assert result["confidence"] == 70.0          # lowest of 100, 70, 85; not cell 3's 40
+    assert result["confidence_band"] == "medium"
+    assert result["flags"] == "access_unverified; wind_exposure_proxy_only"  # SPEC order, distinct
+
+
+def test_parcel_top_criterion_means_decompose_cell_score():
+    """top_<criterion> = mean of score_<criterion> over the same top-N cells,
+    so cell_score = Σ weight × top_<criterion> exactly. Ties at the cut keep
+    the earlier cell, as nlargest does."""
+    candidates, parcels = _four_cells_one_parcel()
+    candidates.loc[1, ["score_hydro", "score_access"]] = [70.0, 25.0]   # 52, ties cell 2
+    candidates["score"] = 0.6 * candidates["score_hydro"] + 0.4 * candidates["score_access"]
+    for top_n in (1, 2, 3, 10):
+        r = aggregate_to_parcels(candidates, parcels, top_n=top_n).iloc[0]
+        assert r["cell_score"] == pytest.approx(0.6 * r["top_hydro"] + 0.4 * r["top_access"])
+    r = aggregate_to_parcels(candidates, parcels, top_n=2).iloc[0]
+    assert (r["top_hydro"], r["top_access"]) == (85.0, 37.5)   # cells 0 and 1, not 2
+    assert "top_allrounder" not in aggregate_to_parcels(candidates, parcels).columns
+
+
+def test_parcel_without_cells_has_no_confidence_or_cell_flags():
+    candidates, _ = _four_cells_one_parcel()
+    far = gpd.GeoDataFrame({"PID": ["far"]}, geometry=[box(5000, 0, 5500, 250)], crs="EPSG:2961")
+    r = aggregate_to_parcels(candidates, far).iloc[0]
+    assert pd.isna(r["confidence"]) and r["confidence_band"] is None
+    assert pd.isna(r["top_hydro"])
+    assert r["flags"] == "parcel_no_assigned_candidates"
+
+
 def test_severance_flag_appends_to_existing_parcel_flags():
     """classify_parcels keeps an existing flag when it adds the severance one."""
     parcels = _parcels_with_metrics()

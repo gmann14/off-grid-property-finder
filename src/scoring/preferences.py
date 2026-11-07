@@ -23,6 +23,7 @@ from src.constants import (
     SEVERANCE_MIN_CELL_SCORE,
     SQ_M_PER_ACRE,
 )
+from src.scoring.confidence import confidence_band, order_flags
 
 logger = logging.getLogger("property_finder")
 
@@ -96,8 +97,13 @@ def aggregate_to_parcels(
         given = assign_points.reindex(eligible.index)
         has_point = given.notna() & ~given.is_empty
         points.loc[has_point] = given[has_point]
+    # Per-criterion cell scores (score_hydro, ...), not the composite or the
+    # all-rounder, travel with each cell so the top-N can be broken down.
+    criteria = [c for c in eligible.columns
+                if c.startswith("score_") and c != "score_allrounder"]
+    carry = ["score"] + criteria + [c for c in ("confidence", "flags") if c in eligible.columns]
     centroid_gdf = gpd.GeoDataFrame(
-        {"score": eligible["score"].values},
+        {c: eligible[c].values for c in carry},
         geometry=points.values,
         crs=candidates.crs,
     )
@@ -105,13 +111,32 @@ def aggregate_to_parcels(
         centroid_gdf, parcels[["geometry"]], how="inner", predicate="within"
     )
 
-    scored = joined.dropna(subset=["score"])
+    # One row per (cell, parcel) pair: a cell inside two overlapping parcels
+    # counts for both, so rows need their own id.
+    scored = joined.dropna(subset=["score"]).reset_index(drop=True)
     grouped = scored.groupby("index_right")["score"]
     cell_score = grouped.apply(lambda s: s.nlargest(top_n).mean())
     n_cells = grouped.size()
 
     parcels["n_cells"] = parcels.index.map(n_cells).fillna(0).astype(int)
     parcels["cell_score"] = parcels.index.map(cell_score).astype(float)
+
+    # The same top-N cells (nlargest's pick: ties go to the earlier cell, which
+    # a stable descending sort keeps first) give the per-criterion means, which
+    # add up to cell_score (cell_score = Σ w·top_c), and the confidence and
+    # flags the parcel rests on (SPEC §4.4).
+    top = (scored.sort_values("score", ascending=False, kind="stable")
+           .groupby("index_right", sort=False).head(top_n).groupby("index_right"))
+    for col in criteria:
+        parcels[f"top_{col.removeprefix('score_')}"] = (
+            parcels.index.map(top[col].mean()).astype(float))
+    if "confidence" in scored.columns:
+        parcels["confidence"] = parcels.index.map(top["confidence"].min()).astype(float)
+        parcels["confidence_band"] = confidence_band(parcels["confidence"])
+    cell_flags = pd.Series(dtype=object)
+    if "flags" in scored.columns:
+        cell_flags = top["flags"].agg(
+            lambda s: order_flags(f for v in s.dropna() for f in str(v).split("; ") if f))
 
     # Parcel size score (preference component)
     parcels["size_score"] = score_parcel_size(parcels)
@@ -135,6 +160,9 @@ def aggregate_to_parcels(
                        (below_min, FLAG_PARCEL_BELOW_MIN_AREA)):
         for i in parcels.index[mask]:
             flags[i].append(flag)
+    # then the flags of the top-N cells the parcel score rests on
+    for i, cell in cell_flags.items():
+        flags[i].extend(cell)
     parcels["flags"] = flags.map("; ".join)
 
     assigned = int((~no_candidates).sum())

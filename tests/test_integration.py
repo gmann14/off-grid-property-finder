@@ -153,6 +153,13 @@ def test_run_score_end_to_end_default_criteria(
     assert by_pid.loc["60010004", "size_score"] == 92
     ranked = pd.read_csv(output / "ranked_parcels.csv")
     assert {"land_acres", "water_share"} <= set(ranked.columns)
+    # Parcels carry their top cells' confidence, and the per-criterion means
+    # over those cells add up to cell_score with the configured weights.
+    weights = cfg.enabled_weights()
+    assert {"confidence", "confidence_band"} | {f"top_{c}" for c in weights} <= set(ranked.columns)
+    assert ranked["confidence"].notna().all()
+    rebuilt = sum(ranked[f"top_{c}"] * w / 100 for c, w in weights.items())
+    assert rebuilt.to_numpy() == pytest.approx(ranked["cell_score"].to_numpy())
 
 
 def test_grid_exclusion_count(small_grid, sample_exclusion_zones):
