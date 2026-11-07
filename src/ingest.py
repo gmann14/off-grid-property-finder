@@ -796,11 +796,7 @@ def fetch_nsprd_parcels(
         return None
 
     # Service expects the query envelope in lat/lon (inSR=4326).
-    bbox_4326 = tuple(
-        gpd.GeoSeries([box(*bbox_working)], crs=working_crs)
-        .to_crs("EPSG:4326")
-        .total_bounds
-    )
+    bbox_4326 = _transform_bounds(bbox_working, working_crs, "EPSG:4326")
 
     # Hard cap so a MapServer that ignores resultOffset (no pagination support)
     # can't loop forever returning the same first page.
@@ -1161,7 +1157,7 @@ def _read_gwa_layer(url: str, bbox: tuple, working_crs: str, dst_transform, shap
     from rasterio.windows import from_bounds as window_from_bounds
 
     with rasterio.open(f"/vsicurl/{url}") as src:
-        b = gpd.GeoSeries([box(*bbox)], crs=working_crs).to_crs(src.crs).total_bounds
+        b = _transform_bounds(bbox, working_crs, src.crs)
         win = window_from_bounds(b[0], b[1], b[2], b[3], src.transform)
         col0 = max(math.floor(win.col_off) - _GWA_WINDOW_PAD_PX, 0)
         row0 = max(math.floor(win.row_off) - _GWA_WINDOW_PAD_PX, 0)
