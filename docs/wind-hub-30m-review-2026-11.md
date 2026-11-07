@@ -1,6 +1,6 @@
 # Wind at a 30 m small-turbine hub — before/after (2026-11-06)
 
-Branch `wind-hub-30m`, merged into `main` on 2026-11-07 (fast-forward); not pushed yet.
+Branch `wind-hub-30m`, merged into `main` (fast-forward) and pushed on 2026-11-07.
 
 - **Before** = the committed July run: GWA 100 m layer, utility-turbine bands
   (8.5/7.5/6.5/5.5 m/s).
