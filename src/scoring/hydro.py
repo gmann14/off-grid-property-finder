@@ -24,6 +24,7 @@ from src.constants import (
     HYDRO_PROFILE_STEP_M,
     MIN_DRAINAGE_AREA_KM2,
     MIN_HEAD_M,
+    SEA_LEVEL_M,
     SPECIFIC_RUNOFF_LOW,
     STREAM_BUFFER_M,
 )
@@ -43,6 +44,10 @@ def flow_accumulation_valid(path: Path) -> bool:
 
     Guards against the common failure where D8 routing dies on large flats and
     accumulation maxes out at a few dozen cells (useless for drainage area).
+    Only land counts: a raster routed with the sea in it piles the whole
+    coast's flow into sea cells, which pass the check even when the land's
+    routing failed. Sea cells are nodata in rasters routed by the current
+    src.dem; for older ones they are masked from the routing DEM beside it.
     """
     if not path.exists():
         return False
@@ -51,7 +56,11 @@ def flow_accumulation_valid(path: Path) -> bool:
         with rasterio.open(path) as src:
             arr = src.read(1)
             nd = src.nodata
-            valid = arr[arr != nd] if nd is not None else arr
+            land = arr != nd if nd is not None else np.isfinite(arr)
+            sea = _sea_on_grid(path.parent, src)
+            if sea is not None:
+                land &= ~sea
+            valid = arr[land]
             if valid.size == 0:
                 return False
             return float(valid.max()) >= FLOW_ACCUM_MIN_VALID_CELLS
@@ -59,6 +68,28 @@ def flow_accumulation_valid(path: Path) -> bool:
         logger.warning("Hydro: could not read flow accumulation %s (%s: %s); treating it "
                        "as invalid", path, type(exc).__name__, exc)
         return False
+
+
+def _sea_on_grid(processed: Path, facc_src) -> np.ndarray | None:
+    """Sea (DEM at or below SEA_LEVEL_M, or no DEM) on the accumulation's grid,
+    from the routing DEM (dem_flowres.tif, else dem.tif) when one shares it.
+    None if neither does."""
+    import rasterio
+
+    for name in ("dem_flowres.tif", "dem.tif"):
+        p = processed / name
+        if not p.exists():
+            continue
+        with rasterio.open(p) as d:
+            if d.shape != facc_src.shape or not d.transform.almost_equals(facc_src.transform):
+                continue
+            z = d.read(1)
+            sea = ~np.isfinite(z) | (z <= SEA_LEVEL_M)
+            if d.nodata is not None:
+                sea |= z == d.nodata
+            return sea
+    logger.debug("Hydro: no DEM on the flow-accumulation grid; validity check uses every cell")
+    return None
 
 
 class _DrainageGrid:

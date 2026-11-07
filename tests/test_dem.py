@@ -62,3 +62,59 @@ def test_dem_without_nodata_tag_keeps_every_pixel(tmp_path):
         d.write(dem, 1)
     slope, nd = _read(generate_slope(path, tmp_path / "slope.tif"))
     assert (slope != nd).all()
+
+
+# --- flow routing with the sea in the DEM (H6) ------------------------------
+def _coast_dem(path):
+    """10 m DEM: land in the west 60 columns falling 1 m per 10 m eastward to
+    0.5 m at the shore, sea (0 m with -1 m hollows, as in the real DEM) in
+    the east 40."""
+    h, w = 100, 100
+    cols = np.arange(w, dtype="float32")
+    row = np.where(cols < 60, 0.5 + (59 - cols), 0.0).astype("float32")
+    dem = np.tile(row, (h, 1))
+    dem[20:30, 70:80] = -1.0
+    dem[60:70, 85:95] = -1.0
+    with rasterio.open(path, "w", driver="GTiff", height=h, width=w, count=1,
+                       dtype="float32", crs=CRS, transform=from_bounds(*BBOX, w, h),
+                       nodata=NODATA) as d:
+        d.write(dem, 1)
+    return path
+
+
+def test_flow_routing_leaves_the_sea_out(tmp_path):
+    """Regression: sea pixels (<= 0 m) were routed like land, so the sea
+    piled up the coast's flow (the real raster's max, 2.9 M cells, is at sea;
+    the land's is 0.6 M) and its hollows were breached through the shore."""
+    from src.dem import generate_flow_accumulation
+
+    out = generate_flow_accumulation(_coast_dem(tmp_path / "dem.tif"),
+                                     tmp_path / "flow_accumulation.tif", target_res_m=20.0)
+    facc, nd = _read(out)
+    routing, rnd = _read(tmp_path / "dem_flowres.tif")
+    assert facc.shape == (50, 50)
+    assert (routing[:, 30:] == rnd).all()          # sea is nodata in the routing DEM
+    assert (facc[:, 30:] == nd).all()              # and accumulates nothing
+    land = facc[:, :30]
+    assert (land != nd).all()
+    # each row drains east to the shore (30 cells), and the flat shore column
+    # passes a few rows' worth along before it leaves: nothing like the
+    # 1,500 land cells the sea used to collect
+    assert 30 <= land.max() < 100
+
+
+def test_flow_routing_rebuilds_a_stale_conditioned_dem(tmp_path):
+    """A conditioned DEM left by an earlier run (e.g. routed with the sea in)
+    must not be reused once the routing DEM is rewritten."""
+    from src.dem import generate_flow_accumulation
+
+    dem = _coast_dem(tmp_path / "dem.tif")
+    stale = np.full((50, 50), 7.0, dtype="float32")  # flat: D8 can't route it
+    with rasterio.open(tmp_path / "dem_flowres_filled.tif", "w", driver="GTiff", height=50,
+                       width=50, count=1, dtype="float32", crs=CRS,
+                       transform=from_bounds(*BBOX, 50, 50), nodata=NODATA) as d:
+        d.write(stale, 1)
+    facc, nd = _read(generate_flow_accumulation(dem, tmp_path / "flow_accumulation.tif",
+                                                target_res_m=20.0))
+    assert (facc[:, 30:] == nd).all()
+    assert 30 <= facc[:, :30].max() < 100

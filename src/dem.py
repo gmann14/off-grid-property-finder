@@ -147,7 +147,8 @@ def generate_exposure(dem_path: Path, out_path: Path, radius_m: float = 1000.0) 
     return out_path
 
 
-def _resample_dem(src_path: Path, dst_path: Path, target_res_m: float) -> Path:
+def _resample_dem(src_path: Path, dst_path: Path, target_res_m: float,
+                  sea_level_m: float | None = None) -> Path:
     """Average-resample a DEM to a coarser resolution for flow routing.
 
     D8 flow accumulation propagates through coastal flats far better at ~20m
@@ -156,7 +157,9 @@ def _resample_dem(src_path: Path, dst_path: Path, target_res_m: float) -> Path:
 
     Nodata cells are excluded from the block average (block-mean of valid cells
     only); an all-nodata block stays nodata. Averaging across the nodata
-    sentinel would otherwise inject garbage elevations into routing.
+    sentinel would otherwise inject garbage elevations into routing. With
+    ``sea_level_m`` set, pixels at or below it are treated as nodata too, so
+    the sea is not routed and a coastal block averages its land pixels only.
     """
     import warnings
 
@@ -168,11 +171,15 @@ def _resample_dem(src_path: Path, dst_path: Path, target_res_m: float) -> Path:
         meta = src.meta.copy()
 
     out_nodata = nodata if nodata is not None else -32767.0
+    invalid = ~np.isfinite(dem)
+    if nodata is not None:
+        invalid |= dem == nodata
+    if sea_level_m is not None:
+        invalid |= dem <= sea_level_m
     if factor == 1:
-        out = dem
+        out = np.where(invalid, out_nodata, dem).astype("float32")
     else:
-        if nodata is not None:
-            dem = np.where(dem == nodata, np.nan, dem)
+        dem = np.where(invalid, np.nan, dem)
         nh, nw = dem.shape[0] // factor, dem.shape[1] // factor
         dem = dem[: nh * factor, : nw * factor].reshape(nh, factor, nw, factor)
         with warnings.catch_warnings():  # all-nan block → nan (expected)
@@ -254,7 +261,17 @@ def generate_flow_accumulation(
     DEMs where D8 fragments on flats. The output accumulation raster is at the
     routing resolution; the hydro scorer reads drainage area by coordinate, so
     a coarser routing grid is fine.
+
+    Routing runs on dem_flowres.tif, a copy of the DEM (resampled when
+    ``target_res_m`` is coarser) with the sea, pixels at or below SEA_LEVEL_M
+    as in the buildability mask, set to nodata. WhiteboxTools then treats the
+    whole coastline as an outlet, and the sea neither accumulates the land's
+    flow nor gets its own pits breached through the shore. The conditioned
+    DEM and pointer are rebuilt from it every time the accumulation is, so a
+    rerun can't reuse ones conditioned from an older routing DEM.
     """
+    from src.constants import FLOW_ACCUM_MIN_VALID_CELLS, SEA_LEVEL_M
+
     if out_path.exists():
         logger.debug("Flow accumulation raster exists, skipping: %s", out_path)
         return out_path
@@ -265,16 +282,18 @@ def generate_flow_accumulation(
         wbt = whitebox.WhiteboxTools()
         wbt.verbose = False
 
-        # Optionally route on a coarser DEM (handles coastal flats)
-        routing_dem = dem_path
-        if target_res_m is not None:
-            with rasterio.open(dem_path) as s:
-                cur_res = abs(s.res[0])
-            if cur_res < target_res_m:
-                routing_dem = out_path.parent / "dem_flowres.tif"
-                _resample_dem(dem_path, routing_dem, target_res_m)
-                logger.info("Flow routing on %.0fm-resampled DEM (native %.1fm)",
-                            target_res_m, cur_res)
+        # Route on a land-only copy, coarser if asked (handles coastal flats)
+        with rasterio.open(dem_path) as s:
+            cur_res = abs(s.res[0])
+        routing_res = cur_res
+        if target_res_m is not None and cur_res < target_res_m:
+            routing_res = target_res_m
+            logger.info("Flow routing on %.0fm-resampled DEM (native %.1fm)",
+                        target_res_m, cur_res)
+        routing_dem = out_path.parent / "dem_flowres.tif"
+        _resample_dem(dem_path, routing_dem, routing_res, sea_level_m=SEA_LEVEL_M)
+        logger.info("Flow routing: DEM pixels at or below %.1f m (sea) are nodata",
+                    SEA_LEVEL_M)
 
         # WhiteboxTools requires absolute paths
         dem_abs = str(Path(routing_dem).resolve())
@@ -289,11 +308,8 @@ def generate_flow_accumulation(
         flow_dir_path = out_path.parent / f"{stem}_dir.tif"
         flow_dir_abs = str(flow_dir_path.resolve())
 
-        if not filled_path.exists():
-            _condition_dem(wbt, dem_abs, filled_abs)
-
-        if not flow_dir_path.exists():
-            wbt.d8_pointer(filled_abs, flow_dir_abs)
+        _condition_dem(wbt, dem_abs, filled_abs)
+        wbt.d8_pointer(filled_abs, flow_dir_abs)
 
         # IMPORTANT: pass the conditioned DEM, not the pointer. d8_flow_accumulation
         # treats its input as a DEM unless pntr=True — feeding it the pointer made
@@ -303,19 +319,24 @@ def generate_flow_accumulation(
 
         # Sanity-check propagation: a valid accumulation over a real study area
         # reaches river scale. Warn loudly if it didn't (e.g., flats broke D8).
+        # The sea is nodata, so this is the land's maximum.
         try:
             with rasterio.open(out_path) as src:
                 arr = src.read(1)
-                amax = float(np.nanmax(arr[arr != (src.nodata if src.nodata is not None else np.nan)]))
-            if amax < 10000:
-                logger.warning(
-                    "Flow accumulation max is only %.0f cells — likely failed to "
-                    "propagate (flats). Hydro will fall back to the segment proxy.",
-                    amax,
-                )
-            logger.info("Generated flow accumulation raster: %s (max=%.0f cells)", out_path, amax)
-        except Exception:
-            logger.info("Generated flow accumulation raster: %s", out_path)
+                valid = arr[arr != src.nodata] if src.nodata is not None else arr
+                amax = float(np.nanmax(valid)) if valid.size else 0.0
+        except Exception as exc:
+            logger.warning("Generated flow accumulation raster %s but could not read it "
+                           "back to check it (%s: %s)", out_path, type(exc).__name__, exc)
+            return out_path
+        if amax < FLOW_ACCUM_MIN_VALID_CELLS:
+            logger.warning(
+                "Flow accumulation max on land is only %.0f cells — likely failed to "
+                "propagate (flats). Hydro will fall back to the segment proxy.",
+                amax,
+            )
+        logger.info("Generated flow accumulation raster: %s (land max=%.0f cells)",
+                    out_path, amax)
 
     except ImportError:
         logger.warning(

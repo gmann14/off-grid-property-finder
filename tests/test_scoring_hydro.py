@@ -365,3 +365,34 @@ def test_a_rise_far_down_the_flow_path_keeps_the_head_above_it():
     # a pair ending within HYDRO_HEAD_CONDITION_M above the rise is still
     # read as ponded behind it
     assert p[120] == 0
+
+
+# --- flow-accumulation validity on land only (H6) ---------------------------
+def _facc_with_sea(tmp_path, routing_name="dem_flowres.tif"):
+    """A 20 x 20 accumulation whose land (west half) never got past 50 cells
+    but whose sea (east half, DEM 0 m) piled up 50,000."""
+    facc = np.full((20, 20), 50.0)
+    facc[:, 10:] = 50000.0
+    _write_raster(tmp_path / "flow_accumulation.tif", FACC_BOUNDS, facc, nodata=-32768)
+    dem = np.full((20, 20), 30.0)
+    dem[:, 10:] = 0.0
+    _write_raster(tmp_path / routing_name, FACC_BOUNDS, dem, nodata=-32767)
+    return tmp_path / "flow_accumulation.tif"
+
+
+def test_flow_accumulation_validity_ignores_sea_cells(tmp_path):
+    """Regression: the check took the max over every cell, and an old raster
+    routed with the sea in it passes on sea cells alone."""
+    from src.scoring.hydro import flow_accumulation_valid
+
+    assert not flow_accumulation_valid(_facc_with_sea(tmp_path))
+
+
+def test_flow_accumulation_validity_without_a_routing_dem_on_its_grid(tmp_path):
+    """With no DEM on the accumulation's grid there is nothing to mask the
+    sea with, so every cell counts (as before)."""
+    from src.scoring.hydro import flow_accumulation_valid
+
+    path = _facc_with_sea(tmp_path, routing_name="other.tif")
+    _write_raster(tmp_path / "dem.tif", FACC_BOUNDS, np.full((40, 40), 0.0), nodata=-32767)
+    assert flow_accumulation_valid(path)
