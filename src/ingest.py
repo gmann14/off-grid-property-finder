@@ -397,11 +397,11 @@ def _normalize_parcel_fields(gdf: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
 def _dissolve_by_pid(gdf: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
     """Merge multiple polygon records for the same PID into one row.
 
-    NSPRD can serve more than one polygon per PID, and clipping to the study
-    bbox can split a parcel across the boundary into fragments. Without this,
-    one property occupies multiple ranked rows, each with fragment-level
-    acreage (undercounting parcels that straddle the bbox edge). Rows with a
-    blank PID are left as-is — they can't be reliably deduplicated.
+    NSPRD can serve more than one polygon per PID. Without this, one property
+    occupies multiple ranked rows, each with fragment-level acreage. Rows with
+    a blank PID are left as-is — they can't be reliably deduplicated. This
+    does not recover the part of a parcel outside the study bbox: ingest_parcels
+    takes that acreage from the unclipped geometry (`_whole_area_m2_if_cut`).
     """
     import pandas as pd
 
@@ -421,6 +421,46 @@ def _dissolve_by_pid(gdf: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
     if n_after < n_before:
         logger.info("Dissolved %d fragment(s) into %d unique PIDs", n_before, n_after)
     return merged
+
+
+def _whole_area_m2_if_cut(gdf: gpd.GeoDataFrame, bbox_geom) -> "pd.Series":
+    """The whole mapped area (m²) of each parcel the study bbox cuts, else NaN.
+
+    Run on the unclipped parcels (after `_normalize_parcel_fields`). A parcel
+    is cut when any of its records is not wholly inside the bbox: it crosses
+    the edge, or has a part outside it. For a cut PID every one of its records
+    gets the area of the union of all of them (overlapping records count
+    once); a cut record with no PID gets its own area. Parcels wholly inside
+    get NaN, so their acreage keeps coming from the clipped geometry exactly
+    as before.
+    """
+    import numpy as np
+    import pandas as pd
+    import shapely
+
+    out = pd.Series(np.nan, index=gdf.index, dtype="float64")
+    if gdf.empty:
+        return out
+    geoms = gdf.geometry.values
+    intersects = shapely.intersects(geoms, bbox_geom)
+    within = shapely.within(geoms, bbox_geom)
+    has_pid = gdf["PID"].astype(bool).to_numpy()
+    pids = gdf["PID"].to_numpy()
+
+    # PIDs in the study area with a record not wholly inside it
+    cut_pids = set(pids[has_pid & ~within]) & set(pids[has_pid & intersects])
+    if cut_pids:
+        sel = np.flatnonzero(has_pid & np.isin(pids, list(cut_pids)))
+        by_pid: dict[str, list[int]] = {}
+        for i in sel:
+            by_pid.setdefault(pids[i], []).append(i)
+        for rows in by_pid.values():
+            parts = geoms[rows]
+            area = shapely.area(parts[0]) if len(rows) == 1 else shapely.area(shapely.union_all(parts))
+            out.iloc[rows] = float(area)
+    blank_cut = ~has_pid & intersects & ~within
+    out.iloc[np.flatnonzero(blank_cut)] = shapely.area(geoms[blank_cut])
+    return out
 
 
 def _build_nsprd_query_url(
@@ -561,7 +601,12 @@ def ingest_parcels(
 
     Output carries canonical ``PID`` / ``AAN`` columns and ``area_acres``,
     reprojected to the working CRS and clipped to the study area.
+    ``area_acres`` is the parcel's whole mapped area, measured before the clip:
+    a parcel crossing the study-area edge keeps its full acreage, while its
+    geometry is only the part inside.
     """
+    from src.constants import SQ_M_PER_ACRE
+
     raw = config.paths.raw
     processed = config.paths.processed
     out_path = processed / "parcels.gpkg"
@@ -596,8 +641,14 @@ def ingest_parcels(
         gdf = gpd.read_file(src_file)
         gdf = _reproject_to_working(gdf, config.working_crs)
 
-    # Clip to study area
+    gdf = _normalize_parcel_fields(gdf)
+
+    # Measure parcels the bbox cuts before clipping them, so area_acres is the
+    # whole parcel, not the part inside the study area.
     bbox_geom = box(*config.study_area.bbox)
+    gdf["_whole_area_m2"] = _whole_area_m2_if_cut(gdf, bbox_geom)
+
+    # Clip to study area
     gdf = gdf[gdf.intersects(bbox_geom)].copy()
     if gdf.empty:
         logger.warning("No parcels within study area")
@@ -605,8 +656,6 @@ def ingest_parcels(
     gdf = gpd.clip(gdf, bbox_geom)
     # Drop slivers / non-polygon leftovers from clipping
     gdf = gdf[gdf.geometry.geom_type.isin(("Polygon", "MultiPolygon"))].copy()
-
-    gdf = _normalize_parcel_fields(gdf)
 
     from src.constants import MIN_PID_COVERAGE_FRACTION
     pid_coverage = (gdf["PID"].astype(bool)).mean() if len(gdf) else 0.0
@@ -620,7 +669,16 @@ def ingest_parcels(
         return None
 
     gdf = _dissolve_by_pid(gdf)
-    gdf["area_acres"] = gdf.geometry.area / 4046.86
+    whole_m2 = gdf.pop("_whole_area_m2")
+    cut = whole_m2.notna()
+    gdf["area_acres"] = whole_m2.where(cut, gdf.geometry.area) / SQ_M_PER_ACRE
+    if cut.any():
+        logger.info(
+            "%d parcel(s) cross the study-area edge: their geometry is clipped, "
+            "their area_acres is the whole parcel (%.0f acres in all, %.0f inside)",
+            int(cut.sum()), float(gdf.loc[cut, "area_acres"].sum()),
+            float(gdf.loc[cut].geometry.area.sum() / SQ_M_PER_ACRE),
+        )
 
     processed.mkdir(parents=True, exist_ok=True)
     gdf.to_file(out_path, driver="GPKG")

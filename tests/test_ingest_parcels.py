@@ -299,3 +299,48 @@ def test_ingest_parcels_missing_returns_none(tmp_path):
     cfg = _config(tmp_path)
     (cfg.paths.raw / "parcels").mkdir(parents=True, exist_ok=True)
     assert ingest_parcels(cfg, source="local") is None
+
+
+# --- area_acres is the whole parcel, not the part inside the bbox ---------
+
+def test_ingest_parcels_area_acres_is_whole_parcel_across_bbox_edge(tmp_path):
+    """Regression: area_acres was computed after clipping to the study bbox, so
+    a parcel crossing the edge got the acreage of its inside part only (real
+    data: PID 60314424 stored 22.99 acres but is 74.97). The stored geometry is
+    still clipped; only the acreage describes the whole parcel."""
+    cfg = _config(tmp_path)
+    parcels_dir = cfg.paths.raw / "parcels"
+    parcels_dir.mkdir(parents=True)
+    xmin, ymin, xmax, ymax = BBOX
+    gdf = gpd.GeoDataFrame(
+        {"PID": ["60010001", "60010002", "60010003", "60010003", ""]},
+        geometry=[
+            # straddles the west edge: 300 m inside, 700 m outside
+            box(xmin - 700, ymin, xmin + 300, ymin + 400),
+            # wholly inside
+            box(xmin + 400, ymin, xmin + 600, ymin + 200),
+            # one PID in two parts: one inside, one wholly outside the bbox
+            box(xmin + 700, ymin, xmax, ymin + 300),
+            box(xmax + 100, ymin, xmax + 400, ymin + 300),
+            # no PID, straddles the north edge: 100 m inside, 100 m outside
+            box(xmin, ymax - 100, xmin + 100, ymax + 100),
+        ],
+        crs=CRS,
+    )
+    gdf.to_file(parcels_dir / "parcels.gpkg", driver="GPKG")
+
+    out = ingest_parcels(cfg, source="local")
+    result = gpd.read_file(out)
+    blank = result[result["PID"] == ""]
+    result = result[result["PID"] != ""].set_index("PID")
+    acres = result["area_acres"]
+    assert acres["60010001"] == pytest.approx(1000 * 400 / 4046.86, rel=1e-9)
+    assert acres["60010003"] == pytest.approx(2 * 300 * 300 / 4046.86, rel=1e-9)
+    assert blank["area_acres"].iloc[0] == pytest.approx(100 * 200 / 4046.86, rel=1e-9)
+    # an interior parcel's acreage is exactly what it was before the fix
+    assert acres["60010002"] == result.geometry["60010002"].area / 4046.86
+    # geometry stays clipped to the study area
+    assert result.geometry["60010001"].area == pytest.approx(300 * 400)
+    assert blank.geometry.iloc[0].area == pytest.approx(100 * 100)
+    assert result.total_bounds[0] >= xmin and result.total_bounds[2] <= xmax
+    assert "_whole_area_m2" not in result.columns
