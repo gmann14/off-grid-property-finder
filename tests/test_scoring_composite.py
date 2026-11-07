@@ -158,3 +158,32 @@ def test_excluded_cells_get_null_score():
     assert pd.isna(result["score"].iloc[1])
 
     del _REGISTRY["_test_c"]
+
+
+def test_failing_scorer_fails_the_run_naming_the_criterion():
+    """Regression: a scorer that raised was logged and scored 0 at full weight,
+    with no flag, so a broken criterion silently reshuffled the whole ranking."""
+    from src.scoring.registry import ScorerError
+
+    @register("_test_ok")
+    def _ok(candidates, config):
+        return pd.Series(75.0, index=candidates.index)
+
+    @register("_test_broken")
+    def _broken(candidates, config):
+        raise ValueError("raster is corrupt")
+
+    grid = gpd.GeoDataFrame(
+        {"status": ["eligible"]}, geometry=[box(0, 0, 1, 1)], crs="EPSG:2961",
+    )
+    cfg = Config(
+        study_area=StudyArea(bbox=(0, 0, 1, 1)),
+        weights={"_test_ok": 50, "_test_broken": 50},
+        enabled_criteria=["_test_ok", "_test_broken"],
+    )
+    try:
+        with pytest.raises(ScorerError, match="_test_broken.*raster is corrupt"):
+            compute_composite_score(grid, cfg)
+    finally:
+        del _REGISTRY["_test_ok"]
+        del _REGISTRY["_test_broken"]

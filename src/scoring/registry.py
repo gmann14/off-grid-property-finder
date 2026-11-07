@@ -17,6 +17,10 @@ ScoringFunc = Callable[[gpd.GeoDataFrame, Config], gpd.pd.Series]
 _REGISTRY: dict[str, ScoringFunc] = {}
 
 
+class ScorerError(RuntimeError):
+    """An enabled criterion's scorer raised, so no honest composite exists."""
+
+
 def register(name: str) -> Callable[[ScoringFunc], ScoringFunc]:
     """Decorator to register a scoring function."""
     def wrapper(func: ScoringFunc) -> ScoringFunc:
@@ -43,6 +47,9 @@ def compute_composite_score(
 
     Adds individual score columns (score_<name>) and a composite 'score' column.
     Excluded cells (status == 'excluded') get score = NaN.
+
+    Raises ScorerError naming the criterion if any enabled scorer raises: a
+    criterion scored 0 at full weight would silently reorder every cell.
     """
     weights = config.enabled_weights()
     candidates = candidates.copy()
@@ -52,11 +59,14 @@ def compute_composite_score(
         col = f"score_{name}"
         try:
             candidates[col] = scorer(candidates, config)
-            logger.info("Scored %s: mean=%.1f, median=%.1f",
-                        name, candidates[col].mean(), candidates[col].median())
-        except Exception:
-            logger.exception("Scorer '%s' failed; assigning 0", name)
-            candidates[col] = 0.0
+        except Exception as e:
+            raise ScorerError(
+                f"Scorer '{name}' failed ({type(e).__name__}: {e}); not ranking with "
+                f"criterion '{name}' missing. Fix its input data or remove it from "
+                "enabled_criteria in config.yaml."
+            ) from e
+        logger.info("Scored %s: mean=%.1f, median=%.1f",
+                    name, candidates[col].mean(), candidates[col].median())
 
     # Compute weighted composite (compensatory — strengths offset weaknesses)
     score_cols = [f"score_{name}" for name in weights]
