@@ -1,6 +1,6 @@
 # Wind at a 30 m small-turbine hub — before/after (2026-11-06)
 
-Branch `wind-hub-30m`, unmerged and unpushed.
+Branch `wind-hub-30m`, merged into `main` on 2026-11-07 (fast-forward); not pushed yet.
 
 - **Before** = the committed July run: GWA 100 m layer, utility-turbine bands
   (8.5/7.5/6.5/5.5 m/s).
@@ -40,8 +40,8 @@ Graham said to go with the recommendations in this review:
 - **Severance cut-off:** stays at a cell score of 50 for now. It is rechecked
   with the wind bands once the Good/Maybe/Bad labels exist (`tasks.md`).
 - **Land acres:** no sliver tolerance. See "Land acres".
-- **Still open:** merging the branch, and whether to reimport the scores into
-  the real-estate-eval atlas afterwards (`tasks.md`).
+- **Merged** into `main` on 2026-11-07. **Still open:** whether to reimport
+  the scores into the real-estate-eval atlas (`tasks.md`).
 
 ## Method
 
@@ -616,12 +616,13 @@ The suite is 290 tests, all passing, all network-free.
 The backup is at `~/Coding/.backups/property-finder-wind100m-2026-11-06/`. It
 holds `output/`, `results/`, `wind.tif` and `.manifest.json` as of the July run.
 
-**If you check out `main` before merging, restore the July `wind.tif` first:**
+**If you check out a commit from before the merge** (anything before
+`eaf1829`), restore the July `wind.tif` first:
 
 ```bash
 cp ~/Coding/.backups/property-finder-wind100m-2026-11-06/wind.tif data/processed/wind.tif
 ```
 
-Otherwise `main`'s code, which doesn't track wind inputs, will score the 30 m
-speeds against the 100 m bands. The new manifest is harmless on `main`, which
-ignores the `layers` key.
+Otherwise that older code, which doesn't track wind inputs, will score the
+30 m speeds against the 100 m bands. The new manifest is harmless there; the
+older code ignores the `layers` key.
