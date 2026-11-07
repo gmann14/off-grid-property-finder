@@ -177,3 +177,39 @@ def test_grid_exclusion_count(small_grid, sample_exclusion_zones):
     assert len(excluded) > 0
     assert len(eligible) > 0
     assert len(excluded) + len(eligible) == 16
+
+
+def _minimal_processed(tmp_path, small_grid, sample_dem, sample_roads, sample_streams):
+    """A processed/ folder with just the grid, DEM, roads and streams."""
+    import shutil
+    from src.config import Config, Paths, StudyArea
+
+    processed = tmp_path / "proc"
+    processed.mkdir()
+    for src_path, name in [(sample_dem, "dem.tif"), (sample_roads, "roads.gpkg"),
+                           (sample_streams, "streams.gpkg")]:
+        shutil.copy2(src_path, processed / name)
+    small_grid.to_file(processed / "candidate_grid.gpkg", driver="GPKG")
+    return Config(
+        study_area=StudyArea(bbox=(380000.0, 4900000.0, 381000.0, 4901000.0), name="smoke"),
+        paths=Paths(raw=tmp_path / "raw", processed=processed, output=tmp_path / "out"),
+    )
+
+
+def test_run_score_without_parcels_removes_the_previous_parcel_outputs(
+    tmp_path, small_grid, sample_dem, sample_roads, sample_streams,
+):
+    """Regression: a run with no parcels.gpkg left the previous run's
+    scored_parcels.* and ranked_parcels.csv in output/, where visualize and
+    snapshot read them as this run's."""
+    import logging
+    from src.export import PARCEL_OUTPUTS
+    from src.score import run_score
+
+    cfg = _minimal_processed(tmp_path, small_grid, sample_dem, sample_roads, sample_streams)
+    cfg.paths.output.mkdir()
+    for name in PARCEL_OUTPUTS:
+        (cfg.paths.output / name).write_text("previous run")
+    run_score(cfg, logging.getLogger("test"))
+    assert (cfg.paths.output / "scored_cells.csv").exists()
+    assert not any((cfg.paths.output / n).exists() for n in PARCEL_OUTPUTS)

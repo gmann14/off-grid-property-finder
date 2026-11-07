@@ -63,21 +63,49 @@ def export_results(candidates: gpd.GeoDataFrame, output_dir: Path) -> None:
     except Exception:
         logger.exception("Failed to export GeoJSON")
 
-    # Eligible-only ranked view
+    # Eligible-only ranked view. Always written (header-only when no cell is
+    # eligible), so a previous run's list can't be left behind looking current.
     status = candidates.get("status", pd.Series("eligible", index=candidates.index))
     eligible = candidates[status != "excluded"].copy()
-    if not eligible.empty:
-        eligible_sorted = eligible.sort_values("rank", kind="stable")  # ties keep grid order
-        eligible_csv = eligible_sorted[[c for c in csv_cols if c in eligible_sorted.columns]].copy()
-        try:
-            eligible_centroids = eligible_sorted.geometry.centroid.to_crs("EPSG:4326")
-            eligible_csv["latitude"] = eligible_centroids.y
-            eligible_csv["longitude"] = eligible_centroids.x
-        except Exception:
-            pass
-        eligible_path = output_dir / "ranked_eligible.csv"
-        eligible_csv.to_csv(eligible_path, index=False)
+    eligible_sorted = eligible.sort_values("rank", kind="stable")  # ties keep grid order
+    eligible_csv = eligible_sorted[[c for c in csv_cols if c in eligible_sorted.columns]].copy()
+    try:
+        eligible_centroids = eligible_sorted.geometry.centroid.to_crs("EPSG:4326")
+        eligible_csv["latitude"] = eligible_centroids.y
+        eligible_csv["longitude"] = eligible_centroids.x
+    except Exception:
+        logger.warning("Could not compute WGS84 centroids for eligible-only CSV export")
+    eligible_path = output_dir / "ranked_eligible.csv"
+    eligible_csv.to_csv(eligible_path, index=False)
+    if eligible_csv.empty:
+        logger.warning("No eligible cells: wrote a header-only %s", eligible_path)
+    else:
         logger.info("Exported eligible-only CSV: %s (%d rows)", eligible_path, len(eligible_csv))
+
+
+# What Stage B writes to output/ (see export_ranked_parcels and run_score).
+PARCEL_OUTPUTS = ("scored_parcels.gpkg", "scored_parcels.geojson", "ranked_parcels.csv")
+
+
+def remove_stale_parcel_outputs(output_dir: Path) -> list[Path]:
+    """Delete a previous run's Stage B outputs from ``output_dir``.
+
+    For a run that skips Stage B (no parcels.gpkg): otherwise the old ranked
+    parcels stay in output/, and visualize and snapshot read them as this
+    run's. Returns the paths removed.
+    """
+    removed = []
+    for name in PARCEL_OUTPUTS:
+        path = Path(output_dir) / name
+        if not path.exists():
+            continue
+        try:
+            path.unlink()
+        except OSError as e:
+            raise RuntimeError(f"Could not remove stale parcel output {path}: {e}") from e
+        logger.warning("No parcel data this run: removed the previous run's %s", path)
+        removed.append(path)
+    return removed
 
 
 def export_ranked_parcels(parcels: gpd.GeoDataFrame, output_dir: Path) -> None:
@@ -97,11 +125,10 @@ def export_ranked_parcels(parcels: gpd.GeoDataFrame, output_dir: Path) -> None:
     except Exception:
         logger.exception("Failed to export parcels GeoJSON")
 
-    # Ranked CSV — scored parcels only, sorted best-first, with centroid lat/lon
+    # Ranked CSV — scored parcels only, sorted best-first, with centroid lat/lon.
+    # Always written (header-only when nothing scored), so a previous run's
+    # list can't be left behind for visualize/snapshot to read as this one's.
     scored = parcels[parcels["score"].notna()].copy()
-    if scored.empty:
-        logger.warning("No scored parcels to rank; skipping ranked_parcels.csv")
-        return
 
     # Ties are ordered by PID, so which tied parcels make a "top N" cut depends
     # only on them, not on unrelated rows elsewhere in the list (a default
@@ -125,4 +152,7 @@ def export_ranked_parcels(parcels: gpd.GeoDataFrame, output_dir: Path) -> None:
 
     csv_path = output_dir / "ranked_parcels.csv"
     csv_df.to_csv(csv_path, index=False)
-    logger.info("Exported ranked parcels CSV: %s (%d parcels)", csv_path, len(csv_df))
+    if csv_df.empty:
+        logger.warning("No scored parcels to rank: wrote a header-only %s", csv_path)
+    else:
+        logger.info("Exported ranked parcels CSV: %s (%d parcels)", csv_path, len(csv_df))

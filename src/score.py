@@ -9,7 +9,7 @@ from src.config import Config
 from src.exclusions import (
     apply_exclusions, load_exclusions, parcel_assignment_points, parcel_land_acres,
 )
-from src.export import export_ranked_parcels, export_results
+from src.export import export_ranked_parcels, export_results, remove_stale_parcel_outputs
 
 # Import scorers to trigger registration
 import src.scoring.elevation  # noqa: F401
@@ -128,6 +128,7 @@ def run_score(config: Config, logger: logging.Logger, limit: int | None = None) 
         export_ranked_parcels(parcels, output)
     else:
         logger.info("No parcel data; skipping Stage B aggregation")
+        remove_stale_parcel_outputs(output)
 
     # Step 6: Export
     logger.info("=== Step 6: Exporting results ===")

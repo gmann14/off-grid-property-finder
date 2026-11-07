@@ -67,16 +67,45 @@ def test_export_ranked_parcels(tmp_path):
     assert "latitude" in csv.columns and "longitude" in csv.columns
 
 
-def test_export_ranked_parcels_none_scored(tmp_path):
+def test_export_ranked_parcels_none_scored_replaces_the_old_list(tmp_path):
+    """Regression: with no scored parcels the CSV was skipped, so the previous
+    run's ranked_parcels.csv stayed in output/ for visualize and snapshot."""
+    pd.DataFrame({"PID": ["old"], "score": [99.0]}).to_csv(tmp_path / "ranked_parcels.csv", index=False)
     parcels = gpd.GeoDataFrame(
-        {"PID": ["60010001"], "score": [None]},
+        {"PID": ["60010001"], "score": [None], "rank": [None]},
         geometry=[box(380000, 4900000, 380250, 4900250)],
         crs="EPSG:2961",
     )
-    # Should not raise; CSV skipped, GeoJSON still written
     export_ranked_parcels(parcels, tmp_path)
-    assert not (tmp_path / "ranked_parcels.csv").exists()
+    csv = pd.read_csv(tmp_path / "ranked_parcels.csv")
+    assert csv.empty and {"PID", "score", "rank"} <= set(csv.columns)
     assert (tmp_path / "scored_parcels.geojson").exists()
+
+
+def test_export_no_eligible_cells_replaces_the_old_ranked_list(tmp_path):
+    """Regression: with no eligible cells ranked_eligible.csv was skipped, so
+    the previous run's stayed in output/."""
+    pd.DataFrame({"score": [99.0]}).to_csv(tmp_path / "ranked_eligible.csv", index=False)
+    candidates = gpd.GeoDataFrame(
+        {"status": ["excluded"], "score": [None], "rank": [None]},
+        geometry=[box(380000, 4900000, 380250, 4900250)],
+        crs="EPSG:2961",
+    )
+    export_results(candidates, tmp_path)
+    csv = pd.read_csv(tmp_path / "ranked_eligible.csv")
+    assert csv.empty and {"status", "score", "rank"} <= set(csv.columns)
+
+
+def test_remove_stale_parcel_outputs(tmp_path):
+    from src.export import PARCEL_OUTPUTS, remove_stale_parcel_outputs
+
+    for name in PARCEL_OUTPUTS:
+        (tmp_path / name).write_text("old run")
+    (tmp_path / "scored_cells.csv").write_text("keep")
+    assert len(remove_stale_parcel_outputs(tmp_path)) == len(PARCEL_OUTPUTS)
+    assert not any((tmp_path / n).exists() for n in PARCEL_OUTPUTS)
+    assert (tmp_path / "scored_cells.csv").exists()
+    assert remove_stale_parcel_outputs(tmp_path) == []  # nothing left: no-op
 
 
 def test_export_empty_geodataframe(tmp_path):
