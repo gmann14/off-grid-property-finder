@@ -9,28 +9,85 @@ import pandas as pd
 from src.config import Config
 from src.constants import (
     ACCESS_FLAG_THRESHOLD,
+    COASTAL_LOW_ELEVATION_SCORES,
     CONFIDENCE_BANDS,
     CONFIDENCE_DEDUCTIONS,
     FLAG_ACCESS_UNVERIFIED,
+    FLAG_COASTAL_LOW_ELEVATION,
     FLAG_HYDRO_LOW_CONFIDENCE,
+    FLAG_SOLAR_LOW_CONFIDENCE,
+    FLAG_WIND_PROXY_ONLY,
 )
 
 logger = logging.getLogger("property_finder")
 
 # Per-cell flag deductions, subtracted from the confidence of each cell that
-# carries the flag, on top of any global data-quality deductions. A string is
+# carries the flag, on top of any global data-quality deductions: flag ->
 # the config.confidence_deductions key the amount is read from (falling back
-# to src.constants.CONFIDENCE_DEDUCTIONS); a number is a fixed amount.
+# to src.constants.CONFIDENCE_DEDUCTIONS). Only access varies per cell; the
+# other flags restate a global data gap that is already deducted once.
 PER_CELL_DEDUCTIONS = {
     FLAG_ACCESS_UNVERIFIED: "no_road_evidence_200m",  # no road evidence within 200m
-    FLAG_HYDRO_LOW_CONFIDENCE: 10,  # hydro score is zero / no stream data
 }
+
+# Cell flags in the order they are listed in ``flags`` (SPEC §2.1 order).
+FLAG_ORDER = (
+    FLAG_ACCESS_UNVERIFIED,
+    FLAG_COASTAL_LOW_ELEVATION,
+    FLAG_HYDRO_LOW_CONFIDENCE,
+    FLAG_SOLAR_LOW_CONFIDENCE,
+    FLAG_WIND_PROXY_ONLY,
+)
+
+# Score columns that an open-area / solar estimate shows up in.
+_SOLAR_SCORE_COLS = ("score_open_ground", "score_solar", "score_buildable")
 
 
 def _deduction(deductions: dict, key: str) -> float | None:
     """``deductions[key]``, else the src.constants default, else None."""
     amount = deductions.get(key, CONFIDENCE_DEDUCTIONS.get(key))
     return None if amount is None else float(amount)
+
+
+def _cell_flag_masks(
+    candidates: gpd.GeoDataFrame, data_flags: dict[str, bool],
+) -> list[tuple[pd.Series, str]]:
+    """(mask, flag) for each SPEC §2.1 cell flag, in ``FLAG_ORDER``.
+
+    - ``access_unverified``: access score below 50 (no road or civic address
+      within 200 m).
+    - ``coastal_low_elevation``: no flood layer (``no_flood_data``) and the
+      cell's elevation score is one of the low-coastal bands (mean under
+      20 m; ``COASTAL_LOW_ELEVATION_SCORES``).
+    - ``hydro_low_confidence``: hydro rests on the drainage proxy
+      (``hydro_drainage_proxy_only``) or a 20 m DEM (``hydro_20m_dem``).
+    - ``solar_low_confidence``: the open-area mask lacks land cover or
+      buildings (``incomplete_land_cover_mask``).
+    - ``wind_exposure_proxy_only``: wind from terrain exposure, not a wind
+      raster (``wind_proxy_only``).
+    """
+    nan = pd.Series(np.nan, index=candidates.index)
+
+    def scored(col: str) -> pd.Series:
+        return pd.notna(candidates.get(col, nan))
+
+    access = candidates.get("score_access", nan)
+    elevation = candidates.get("score_elevation", nan)
+    solar_scored = pd.Series(False, index=candidates.index)
+    for col in _SOLAR_SCORE_COLS:
+        solar_scored |= scored(col)
+    masks = {
+        FLAG_ACCESS_UNVERIFIED: pd.notna(access) & (access < ACCESS_FLAG_THRESHOLD),
+        FLAG_COASTAL_LOW_ELEVATION: (
+            scored("score_elevation") & elevation.isin(COASTAL_LOW_ELEVATION_SCORES)
+            & bool(data_flags.get("no_flood_data"))
+        ),
+        FLAG_HYDRO_LOW_CONFIDENCE: scored("score_hydro") & bool(
+            data_flags.get("hydro_drainage_proxy_only") or data_flags.get("hydro_20m_dem")),
+        FLAG_SOLAR_LOW_CONFIDENCE: solar_scored & bool(data_flags.get("incomplete_land_cover_mask")),
+        FLAG_WIND_PROXY_ONLY: scored("score_wind") & bool(data_flags.get("wind_proxy_only")),
+    }
+    return [(masks[flag], flag) for flag in FLAG_ORDER]
 
 
 def compute_confidence(
@@ -62,22 +119,15 @@ def compute_confidence(
             confidence -= amount
             logger.info("Confidence deduction: %s (-%g)", flag, amount)
 
-    # Per-cell flags and deductions — vectorized (was a per-row iterrows loop).
-    # access_score/hydro_score default to an all-NaN Series when the column is
-    # absent, so pd.notna() below is False everywhere, matching the old
-    # cell.get(...) -> None -> pd.notna(None) -> False behavior.
-    access_score = candidates.get("score_access", pd.Series(np.nan, index=candidates.index))
-    hydro_score = candidates.get("score_hydro", pd.Series(np.nan, index=candidates.index))
-
-    flag_masks = [
-        (pd.notna(access_score) & (access_score < ACCESS_FLAG_THRESHOLD), FLAG_ACCESS_UNVERIFIED),
-        (pd.notna(hydro_score) & (hydro_score == 0), FLAG_HYDRO_LOW_CONFIDENCE),
-    ]
+    # Per-cell flags and deductions — vectorized. A flag only goes on a cell
+    # that has a score for the criterion it is about: a missing column (the
+    # criterion is disabled) or a nulled one (the cell is excluded) is NaN,
+    # so pd.notna() is False there.
+    flag_masks = _cell_flag_masks(candidates, data_flags)
 
     for mask, flag in flag_masks:
-        amount = PER_CELL_DEDUCTIONS.get(flag)
-        if isinstance(amount, str):
-            amount = _deduction(deductions, amount)
+        key = PER_CELL_DEDUCTIONS.get(flag)
+        amount = _deduction(deductions, key) if key else None
         if amount:
             confidence = confidence.where(~mask, confidence - amount)
 
@@ -94,6 +144,8 @@ def compute_confidence(
             index=candidates.index,
         )
     candidates["flags"] = flags_col
+    logger.info("Cell flags: %s", ", ".join(
+        f"{flag}={int(mask.sum())}" for mask, flag in flag_masks))
 
     # Clamp confidence
     confidence = confidence.clip(lower=0)

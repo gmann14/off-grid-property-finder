@@ -115,21 +115,82 @@ def test_global_deduction_falls_back_to_default_when_key_absent():
     assert result["confidence"].iloc[0] == 90.0
 
 
-def test_per_cell_hydro_deduction():
-    """Hydro low-confidence flag should deduct 10 from confidence."""
+def test_hydro_zero_is_not_low_confidence():
+    """Regression: hydro_low_confidence (with an unlisted -10) went on every
+    cell scoring hydro 0, 81% of the real eligible cells. A cell with no
+    nearby stream is a low hydro score, not a low-confidence estimate."""
     candidates = _make_candidates(score_hydro=0)
     result = compute_confidence(candidates, _make_config(), data_flags={})
+    assert result["confidence"].iloc[0] == 100.0
+    assert result["flags"].iloc[0] == ""
+
+
+@pytest.mark.parametrize("data_flag", ["hydro_drainage_proxy_only", "hydro_20m_dem"])
+def test_hydro_low_confidence_marks_proxy_or_coarse_dem_estimates(data_flag):
+    """SPEC §2.1: hydro estimate based on a low-resolution DEM or the
+    drainage proxy only. Only the global deduction applies, once."""
+    candidates = _make_candidates(score_hydro=60)
+    result = compute_confidence(candidates, _make_config(), data_flags={data_flag: True})
+    assert result["flags"].iloc[0] == "hydro_low_confidence"
+    assert result["confidence"].iloc[0] == 100.0 - _make_config().confidence_deductions[data_flag]
+
+
+def test_coastal_low_elevation_only_without_flood_data():
+    """SPEC §2.1: low elevation near the coast with no flood layer. 70/40/10/0
+    are the under-20 m (low-coastal) elevation bands; 50 is the no-DEM score."""
+    gdf = gpd.GeoDataFrame(
+        {"status": ["eligible"] * 5, "score": [50.0] * 5,
+         "score_elevation": [100.0, 70.0, 10.0, 0.0, 50.0]},
+        geometry=[box(250 * i, 0, 250 * (i + 1), 250) for i in range(5)],
+        crs="EPSG:2961",
+    )
+    result = compute_confidence(gdf, _make_config(), data_flags={"no_flood_data": True})
+    assert result["flags"].tolist() == [
+        "", "coastal_low_elevation", "coastal_low_elevation", "coastal_low_elevation", ""]
+    assert (result["confidence"] == 80.0).all()  # the global -20 only
+    with_flood = compute_confidence(gdf, _make_config(), data_flags={"no_flood_data": False})
+    assert (with_flood["flags"] == "").all()
+
+
+def test_solar_low_confidence_when_mask_lacks_land_cover():
+    candidates = _make_candidates(score_open_ground=65.0)
+    result = compute_confidence(candidates, _make_config(),
+                                data_flags={"incomplete_land_cover_mask": True})
+    assert result["flags"].iloc[0] == "solar_low_confidence"
     assert result["confidence"].iloc[0] == 90.0
-    assert "hydro_low_confidence" in result["flags"].iloc[0]
+    # No open-area criterion scored: nothing to flag (the global -10 still applies).
+    result = compute_confidence(_make_candidates(), _make_config(),
+                                data_flags={"incomplete_land_cover_mask": True})
+    assert result["flags"].iloc[0] == ""
 
 
-def test_per_cell_both_flags():
-    """Both per-cell flags should stack deductions."""
-    candidates = _make_candidates(score_access=20, score_hydro=0)
-    result = compute_confidence(candidates, _make_config(), data_flags={})
-    # 100 - 15 (access) - 10 (hydro) = 75
-    assert result["confidence"].iloc[0] == 75.0
-    assert result["confidence_band"].iloc[0] == "medium"
+def test_wind_exposure_proxy_only_when_wind_is_from_terrain():
+    candidates = _make_candidates(score_wind=80.0)
+    result = compute_confidence(candidates, _make_config(), data_flags={"wind_proxy_only": True})
+    assert result["flags"].iloc[0] == "wind_exposure_proxy_only"
+    assert result["confidence"].iloc[0] == 90.0
+    result = compute_confidence(candidates, _make_config(), data_flags={"wind_proxy_only": False})
+    assert result["flags"].iloc[0] == ""
+
+
+def test_all_flags_in_spec_order_and_excluded_cells_get_none():
+    gdf = gpd.GeoDataFrame(
+        {"status": ["eligible", "excluded"], "score": [40.0, None],
+         "score_access": [20.0, None], "score_elevation": [40.0, None],
+         "score_hydro": [0.0, None], "score_open_ground": [0.0, None],
+         "score_wind": [15.0, None]},
+        geometry=[box(0, 0, 250, 250), box(250, 0, 500, 250)],
+        crs="EPSG:2961",
+    )
+    all_gaps = {"no_flood_data": True, "hydro_drainage_proxy_only": True,
+                "incomplete_land_cover_mask": True, "wind_proxy_only": True}
+    result = compute_confidence(gdf, _make_config(), data_flags=all_gaps)
+    assert result["flags"].iloc[0] == (
+        "access_unverified; coastal_low_elevation; hydro_low_confidence; "
+        "solar_low_confidence; wind_exposure_proxy_only")
+    assert result["flags"].iloc[1] == ""
+    # 100 - 20 - 20 - 10 - 10 (global) - 15 (access) = 25
+    assert result["confidence"].iloc[0] == 25.0
 
 
 def test_per_cell_flags_plus_global():
@@ -139,8 +200,8 @@ def test_per_cell_flags_plus_global():
         candidates, _make_config(),
         data_flags={"no_flood_data": True},
     )
-    # 100 - 20 (global) - 15 (access) - 10 (hydro) = 55
-    assert result["confidence"].iloc[0] == 55.0
+    # 100 - 20 (global) - 15 (access) = 65
+    assert result["confidence"].iloc[0] == 65.0
     assert result["confidence_band"].iloc[0] == "medium"
 
 
@@ -168,21 +229,20 @@ def test_no_status_column_counts_every_cell_as_eligible():
 
 
 def test_flags_string_content_single_and_combined():
-    """Regression for the vectorized rewrite: the joined flags string must
-    match exactly what the old per-row loop produced — single flag as-is, both
-    flags joined with '; ', and no flag when neither condition applies."""
+    """The joined flags string: single flag as-is, two joined with '; ' in
+    SPEC order, and no flag when neither condition applies."""
     gdf = gpd.GeoDataFrame(
         {
             "status": ["eligible"] * 3,
             "score": [80.0, 60.0, 40.0],
             "score_access": [100.0, 20.0, 100.0],   # none / unverified / none
-            "score_hydro": [40.0, 0.0, 0.0],         # none / low / low
+            "score_hydro": [40.0, 0.0, 0.0],
         },
         geometry=[box(0, 0, 250, 250), box(250, 0, 500, 250), box(500, 0, 750, 250)],
         crs="EPSG:2961",
     )
-    result = compute_confidence(gdf, _make_config(), data_flags={})
-    assert result["flags"].iloc[0] == ""
+    result = compute_confidence(gdf, _make_config(), data_flags={"hydro_20m_dem": True})
+    assert result["flags"].iloc[0] == "hydro_low_confidence"
     assert result["flags"].iloc[1] == "access_unverified; hydro_low_confidence"
     assert result["flags"].iloc[2] == "hydro_low_confidence"
 
@@ -202,9 +262,8 @@ def test_mixed_cells_different_confidence():
     result = compute_confidence(gdf, _make_config(), data_flags={})
     # Cell 0: no flags → 100
     assert result["confidence"].iloc[0] == 100.0
-    # Cell 1: access_unverified + hydro_low → 100 - 15 - 10 = 75
-    assert result["confidence"].iloc[1] == 75.0
-    # Cell 2: access_unverified + hydro_low → 100 - 15 - 10 = 75
-    assert result["confidence"].iloc[2] == 75.0
+    # Cells 1 and 2: access_unverified → 100 - 15 = 85 (hydro 0 is no flag)
+    assert result["confidence"].iloc[1] == 85.0
+    assert result["confidence"].iloc[2] == 85.0
     # Verify different bands emerge
     assert result["confidence"].iloc[0] != result["confidence"].iloc[1]

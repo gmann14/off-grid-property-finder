@@ -37,6 +37,13 @@ ELEVATION_THRESHOLDS = [
     (0, 5, 10),                  # Tidal / storm-surge zone
     # below 0 (at/below sea level) falls through to default score 0
 ]
+# coastal_low_elevation (SPEC §2.1, only without a flood layer): a cell whose
+# elevation score is one of the low-coastal bands, i.e. a mean under this many
+# metres, or below sea level (score 0). The no-DEM neutral score (50) isn't one.
+COASTAL_LOW_ELEVATION_M = 20
+COASTAL_LOW_ELEVATION_SCORES = frozenset(
+    {s for _lo, hi, s in ELEVATION_THRESHOLDS if hi <= COASTAL_LOW_ELEVATION_M} | {0}
+)
 
 ACCESS_DISTANCE_THRESHOLDS = [
     (0, 0, 100),     # Road intersects cell or civic address in cell
