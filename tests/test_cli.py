@@ -133,3 +133,17 @@ def test_cli_ingest_parcels_exits_1_when_nothing_is_ingested(runner, tmp_path):
     cfg = _write_config(tmp_path)
     result = runner.invoke(cli, ["--config", str(cfg), "ingest-parcels"])
     assert result.exit_code == 1
+
+
+def test_cli_score_exits_1_when_a_scorer_fails(runner, tmp_path, monkeypatch):
+    import src.score
+    from src.scoring.registry import ScorerError
+
+    def boom(*_a, **_k):
+        raise ScorerError("Scorer 'hydro' failed: boom")
+
+    monkeypatch.setattr(src.score, "run_score", boom)
+    cfg = _write_config(tmp_path)
+    result = runner.invoke(cli, ["--config", str(cfg), "score"])
+    assert result.exit_code == 1
+    assert not isinstance(result.exception, ScorerError)   # clean exit, no traceback
