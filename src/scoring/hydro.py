@@ -25,6 +25,12 @@ from src.scoring.registry import register
 
 logger = logging.getLogger("property_finder")
 
+# NSHN line features that are not flowing water: lake shorelines (WALK),
+# tidal outflows (WATO), wharves (WAWH), dams (WADM), boundaries (WABD) and
+# the coastline (WACO, incl. WACORV tidal river reaches).
+_NON_FLOWING_PREFIXES = ("WALK", "WATO", "WAWH", "WADM", "WABD", "WACO")
+_COASTLINE_LINE_CLASS = 3
+
 
 def flow_accumulation_valid(path: Path) -> bool:
     """True if a D8 flow-accumulation raster actually propagated to river scale.
@@ -172,20 +178,16 @@ def _estimate_drainage_area(stream, all_streams: gpd.GeoDataFrame) -> float:
     seg_len_km = seg_len_m / 1000.0
     base = max(MIN_DRAINAGE_AREA_KM2, 2.0 * seg_len_km ** 1.5)
 
-    # Boost for higher LINE_CLASS (when it is meaningful)
+    # Double-line rivers (LINE_CLASS 2 banks, and the features drawn inside
+    # them) are bigger than their segment length suggests. There is no larger
+    # boost for LINE_CLASS 3 or WACO features: those are the sea-level
+    # coastline, which _filter_to_flowing_water drops.
     line_class = stream.get("LINE_CLASS", 1)
     if pd.isna(line_class):
         line_class = 1
     line_class = int(line_class)
-    if line_class >= 3:
-        base = max(base, 25.0)
-    elif line_class >= 2:
+    if line_class >= 2 and line_class != _COASTLINE_LINE_CLASS:
         base = max(base, 5.0)
-
-    # Connectors (WACO) carry accumulated upstream drainage
-    feat_code = stream.get("FEAT_CODE", "")
-    if isinstance(feat_code, str) and feat_code.startswith("WACO"):
-        base = max(base, 10.0)
 
     return base
 
@@ -194,14 +196,21 @@ def _filter_to_flowing_water(streams: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
     """Filter NSHN stream features to flowing water only.
 
     Excludes lake shorelines, tidal outflows, wharves, dams, boundaries,
-    and island shoreline features.
+    island shoreline features, and the coastline: every WACO* code (WACO20/25
+    coastline, WACORV* tidal river banks and centrelines, WACO*F0 closing
+    lines) carries MINZ = MAXZ = 0.2 m and sits on DEM pixels at or near sea
+    level, and LINE_CLASS 3 is the coastline class. Tidal water has no head.
     """
-    if "FEAT_CODE" not in streams.columns:
+    if "FEAT_CODE" not in streams.columns and "LINE_CLASS" not in streams.columns:
         return streams
 
-    exclude_prefixes = ("WALK", "WATO", "WAWH", "WADM", "WABD")
-    excluded = streams["FEAT_CODE"].str.startswith(exclude_prefixes)
-    excluded |= streams["FEAT_CODE"].str.contains("IS", na=False)
+    excluded = pd.Series(False, index=streams.index)
+    if "FEAT_CODE" in streams.columns:
+        codes = streams["FEAT_CODE"].fillna("").astype(str)
+        excluded |= codes.str.startswith(_NON_FLOWING_PREFIXES)
+        excluded |= codes.str.contains("IS", na=False)
+    if "LINE_CLASS" in streams.columns:
+        excluded |= pd.to_numeric(streams["LINE_CLASS"], errors="coerce").eq(_COASTLINE_LINE_CLASS)
     n_before = len(streams)
     result = streams[~excluded].reset_index(drop=True)
     logger.info("Filtered to %d flowing water features (from %d total)",

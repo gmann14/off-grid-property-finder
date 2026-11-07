@@ -102,3 +102,70 @@ def test_waco_connector_no_false_hydro(tmp_path):
 
     scores = score_hydro(candidates, config)
     assert scores.iloc[0] == 0, f"WACO connector should not score for hydro, got {scores.iloc[0]}"
+
+
+def _hydro_config(tmp_path, bbox, cell_size=250):
+    from src.config import Config, Paths, StudyArea
+    return Config(
+        study_area=StudyArea(bbox=bbox, name="test"),
+        cell_size_m=cell_size,
+        paths=Paths(raw=tmp_path / "raw", processed=tmp_path, output=tmp_path / "output"),
+    )
+
+
+def _write_raster(path, bounds, arr, nodata=-9999, dtype="float32"):
+    height, width = arr.shape
+    transform = from_bounds(*bounds, width, height)
+    with rasterio.open(
+        path, "w", driver="GTiff", height=height, width=width, count=1,
+        dtype=dtype, crs="EPSG:2961", transform=transform, nodata=nodata,
+    ) as dst:
+        dst.write(arr.astype(dtype), 1)
+
+
+def test_filter_drops_coastline_codes_and_line_class_3():
+    """WACO* (coastline, tidal river banks/centrelines, closing lines) and
+    LINE_CLASS 3 (coastline class) are tidal water, not streams."""
+    from src.scoring.hydro import _filter_to_flowing_water
+
+    codes = ["WACO20", "WACO25", "WACOF0", "WACORV20", "WACORV25", "WACORV59",
+             "WACORVF0", "WARV50", "WARV59", "WARV10", "WAXX99"]
+    classes = [3, 3, 6, 2, 2, 1, 6, 1, 1, 2, 3]
+    streams = gpd.GeoDataFrame(
+        {"FEAT_CODE": codes, "LINE_CLASS": classes},
+        geometry=[LineString([(0, i), (100, i)]) for i in range(len(codes))],
+        crs="EPSG:2961",
+    )
+    kept = _filter_to_flowing_water(streams)
+    assert sorted(kept["FEAT_CODE"]) == ["WARV10", "WARV50", "WARV59"]
+
+
+def test_drainage_guess_has_no_coastline_boost():
+    """The segment-length drainage guess must not inflate a 100 m line to
+    25 km² (LINE_CLASS 3) or 10 km² (WACO)."""
+    from src.scoring.hydro import _estimate_drainage_area
+
+    line = LineString([(0, 0), (100, 0)])
+    for code, lc in (("WACO20", 3), ("WACORV59", 1), ("WARV50", 3)):
+        stream = pd.Series({"FEAT_CODE": code, "LINE_CLASS": lc, "geometry": line})
+        assert _estimate_drainage_area(stream, None) == MIN_DRAINAGE_AREA_KM2
+
+
+def test_coastline_next_to_a_bluff_scores_no_hydro(tmp_path):
+    """Regression (cells 27585 / 27289): a WACO coastline line drawn across
+    the foot of a coastal bluff picked up the bluff as 'head' and scored."""
+    xmin, ymin = 380000.0, 4900000.0
+    bounds = (xmin, ymin, xmin + 250, ymin + 250)
+    candidates = gpd.GeoDataFrame({"cell_id": [0]}, geometry=[box(*bounds)], crs="EPSG:2961")
+    coast = LineString([(xmin + 10, ymin + 10), (xmin + 240, ymin + 240)])
+    gpd.GeoDataFrame(
+        {"FEAT_CODE": ["WACO20"], "LINE_CLASS": [3], "MINZ": [0.2], "MAXZ": [0.2]},
+        geometry=[coast], crs="EPSG:2961",
+    ).to_file(tmp_path / "streams.gpkg", driver="GPKG")
+    # Sea at 0 m in the south-west rising to a 30 m bluff top in the north-east.
+    yy, xx = np.mgrid[0:25, 0:25]
+    dem = np.clip((xx + (24 - yy)) * 1.5 - 10, 0, 30)
+    _write_raster(tmp_path / "dem.tif", bounds, dem)
+
+    scores = score_hydro(candidates, _hydro_config(tmp_path, bounds))
+    assert scores.iloc[0] == 0
