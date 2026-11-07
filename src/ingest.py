@@ -10,6 +10,7 @@ from contextlib import contextmanager
 from pathlib import Path
 
 import geopandas as gpd
+import pandas as pd
 import rasterio
 from rasterio.warp import calculate_default_transform, reproject, Resampling
 from shapely.geometry import box
@@ -694,7 +695,7 @@ def _dissolve_by_pid(gdf: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
     return merged
 
 
-def _whole_area_m2_if_cut(gdf: gpd.GeoDataFrame, bbox_geom) -> "pd.Series":
+def _whole_area_m2_if_cut(gdf: gpd.GeoDataFrame, bbox_geom) -> pd.Series:
     """The whole mapped area (m²) of each parcel the study bbox cuts, else NaN.
 
     Run on the unclipped parcels (after `_normalize_parcel_fields`). A parcel
@@ -706,7 +707,6 @@ def _whole_area_m2_if_cut(gdf: gpd.GeoDataFrame, bbox_geom) -> "pd.Series":
     as before.
     """
     import numpy as np
-    import pandas as pd
     import shapely
 
     out = pd.Series(np.nan, index=gdf.index, dtype="float64")
