@@ -7,76 +7,11 @@ import geopandas as gpd
 import rasterio
 
 from src.config import Config
-
-EXPECTED_LAYERS = {
-    "dem": {
-        "subdir": "dem",
-        "type": "raster",
-        "extensions": [".tif", ".tiff"],
-        "required": True,
-        "description": "DEM raster — HRDEM (2-5m) preferred in data/raw/hrdem/, else CDEM (~18m) here",
-    },
-    "streams": {
-        "subdir": "hydro",
-        "type": "vector",
-        "extensions": [".shp", ".gpkg", ".geojson"],
-        "required": True,
-        "description": "NSHN stream network",
-    },
-    "land_cover": {
-        "subdir": "land-cover",
-        "type": "vector",
-        "extensions": [".shp", ".gpkg", ".geojson"],
-        "required": True,
-        "description": "NSTDB land cover",
-    },
-    "roads": {
-        "subdir": "roads",
-        "type": "vector",
-        "extensions": [".shp", ".gpkg", ".geojson", ".pbf"],
-        "required": True,
-        "description": "Road network (OSM or NSTDB)",
-    },
-    "protected_areas": {
-        "subdir": "exclusions",
-        "type": "vector",
-        "extensions": [".shp", ".gpkg", ".geojson"],
-        "required": True,
-        "description": "Protected areas",
-    },
-    "buildings": {
-        "subdir": "buildings",
-        "type": "vector",
-        "extensions": [".shp", ".gpkg", ".geojson"],
-        "required": False,
-        "description": "Building footprints",
-    },
-    "parcels": {
-        "subdir": "parcels",
-        "type": "vector",
-        "extensions": [".shp", ".gpkg", ".gdb"],
-        "required": False,
-        "description": "Property parcels (Stage B) — or fetch with `ingest-parcels --from-rest`",
-    },
-    "civic": {
-        "subdir": "civic",
-        "type": "vector",
-        "extensions": [".shp", ".gpkg", ".geojson"],
-        "required": False,
-        "description": "Civic address points",
-    },
-    "waterbodies": {
-        "subdir": "water",
-        "type": "vector",
-        "extensions": [".shp", ".gpkg", ".geojson"],
-        "required": False,
-        "description": "Waterbody polygons (lakes/ocean) for the buildability mask",
-    },
-}
+from src.raw_layers import RAW_LAYERS, RawLayer, find_raw_files, search_locations
 
 # Layers that `prepare`/`ingest` fetch directly from a remote service into
 # data/processed/ — they need no raw file at all, so they're checked separately
-# from EXPECTED_LAYERS (which assumes a manually-downloaded raw input).
+# from RAW_LAYERS (src/raw_layers.py: the manually-downloaded raw inputs).
 AUTO_FETCHED_LAYERS = {
     "flood": {
         "processed_name": "flood.gpkg",
@@ -89,14 +24,6 @@ AUTO_FETCHED_LAYERS = {
         "description": "Wind resource (Global Wind Atlas) — auto-fetched by `ingest_wind`",
     },
 }
-
-
-def _find_files(directory: Path, extensions: list[str]) -> list[Path]:
-    found = []
-    if directory.exists():
-        for ext in extensions:
-            found.extend(directory.glob(f"*{ext}"))
-    return found
 
 
 def _check_raster(path: Path, logger: logging.Logger) -> dict:
@@ -115,10 +42,11 @@ def _check_raster(path: Path, logger: logging.Logger) -> dict:
         return {"path": str(path), "status": "error", "error": str(e)}
 
 
-def _check_vector(path: Path, logger: logging.Logger) -> dict:
+def _check_vector(path: Path, logger: logging.Logger, layer: str | None = None) -> dict:
     try:
-        gdf = gpd.read_file(path, rows=1)
-        full_count = len(gpd.read_file(path, rows=0, ignore_geometry=True))
+        kwargs = {"layer": layer} if layer else {}
+        gdf = gpd.read_file(path, rows=1, **kwargs)
+        full_count = len(gpd.read_file(path, rows=0, ignore_geometry=True, **kwargs))
         return {
             "path": str(path),
             "status": "ok",
@@ -130,6 +58,35 @@ def _check_vector(path: Path, logger: logging.Logger) -> dict:
     except Exception as e:
         logger.warning("Failed to read vector %s: %s", path, e)
         return {"path": str(path), "status": "error", "error": str(e)}
+
+
+def _gdb_layer(path: Path, spec: RawLayer, logger: logging.Logger) -> str | None:
+    """The layer to check inside a File Geodatabase: the one ingest reads, if
+    the table names one and the geodatabase has it; else the first layer."""
+    if path.suffix.lower() != ".gdb" or not spec.gdb_layer:
+        return None
+    try:
+        import pyogrio
+        names = [str(n) for n in pyogrio.list_layers(path)[:, 0]]
+    except Exception as e:
+        # The read in _check_vector reports the unreadable geodatabase.
+        logger.debug("Could not list layers of %s: %s", path, e)
+        return None
+    return spec.gdb_layer if spec.gdb_layer in names else None
+
+
+def _check_files(files: list[Path], spec: RawLayer, logger: logging.Logger) -> dict:
+    """Check every file a layer is read from; the layer is ok only if all are.
+    The result describes the first file (or the first failing one) and lists
+    them all under ``files``."""
+    checks = [
+        _check_raster(f, logger) if spec.type == "raster"
+        else _check_vector(f, logger, _gdb_layer(f, spec, logger))
+        for f in files
+    ]
+    result = next((c for c in checks if c["status"] != "ok"), checks[0])
+    result["files"] = [str(f) for f in files]
+    return result
 
 
 def _check_auto_fetched(config: Config, logger: logging.Logger) -> dict[str, dict]:
@@ -158,34 +115,33 @@ def _check_auto_fetched(config: Config, logger: logging.Logger) -> dict[str, dic
 
 
 def run_check_data(config: Config, logger: logging.Logger) -> dict[str, dict]:
+    """Report, for each raw layer, whether the files ingest would read exist
+    and are readable (see src/raw_layers.py), plus the auto-fetched layers."""
     results = {}
     raw_dir = config.paths.raw
 
-    for layer_name, spec in EXPECTED_LAYERS.items():
-        layer_dir = raw_dir / spec["subdir"]
-        files = _find_files(layer_dir, spec["extensions"])
+    for layer_name, spec in RAW_LAYERS.items():
+        files = find_raw_files(raw_dir, layer_name)
 
         if not files:
-            status = "MISSING (required)" if spec["required"] else "MISSING (optional)"
-            logger.warning("%s: %s — %s", layer_name, status, spec["description"])
-            results[layer_name] = {"status": status, "description": spec["description"]}
+            status = "MISSING (required)" if spec.required else "MISSING (optional)"
+            logger.warning("%s: %s — %s (looked in %s)", layer_name, status, spec.description,
+                           search_locations(raw_dir, layer_name))
+            results[layer_name] = {"status": status, "description": spec.description}
             continue
 
-        file_path = files[0]
-        if spec["type"] == "raster":
-            result = _check_raster(file_path, logger)
-        else:
-            result = _check_vector(file_path, logger)
-
-        result["description"] = spec["description"]
+        result = _check_files(files, spec, logger)
+        result["description"] = spec.description
         results[layer_name] = result
 
+        more = f" (+{len(files) - 1} more)" if len(files) > 1 else ""
         if result["status"] == "ok":
-            logger.info("%-18s OK  %s", layer_name, file_path.name)
+            logger.info("%-18s OK  %s%s", layer_name, files[0].name, more)
             if "crs" in result:
                 logger.info("  CRS: %s", result["crs"])
         else:
-            logger.error("%-18s ERROR  %s", layer_name, result.get("error", ""))
+            logger.error("%-18s ERROR  %s: %s", layer_name, Path(result["path"]).name,
+                         result.get("error", ""))
 
     results.update(_check_auto_fetched(config, logger))
 

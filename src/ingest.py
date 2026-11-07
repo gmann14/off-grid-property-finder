@@ -16,6 +16,7 @@ from shapely.geometry import box
 
 from src.config import Config
 from src.constants import WORKING_CRS
+from src.raw_layers import RAW_LAYERS, files_by_source, find_raw_files, search_locations
 
 logger = logging.getLogger("property_finder")
 
@@ -85,11 +86,8 @@ _DEM_MOSAIC_PAD_PX = 2
 
 def _dem_tiles(raw: Path) -> tuple[list[Path], list[Path]]:
     """HRDEM tiles (data/raw/hrdem/) and CDEM tiles (data/raw/dem/), sorted,
-    each file once."""
-    hrdem = sorted((raw / "hrdem").glob("*.tif"))
-    cdem = list(dict.fromkeys(
-        sorted((raw / "dem").glob("cdem_*.tif")) + sorted((raw / "dem").glob("*.tif"))
-    ))
+    each file once (see src/raw_layers.py)."""
+    hrdem, cdem = files_by_source(raw, "dem")
     return hrdem, cdem
 
 
@@ -345,13 +343,17 @@ def ingest_streams(config: Config) -> Path | None:
         logger.info("Streams already processed: %s", out_path)
         return out_path
 
-    # Try GDB first (NSHN)
-    gdb_candidates = list((raw / "hydro").glob("*.gdb"))
-    if gdb_candidates:
-        gdb_path = gdb_candidates[0]
-        logger.info("Ingesting streams from GDB: %s (layer: nshn_v2_wa_line)", gdb_path)
+    # GDB first (NSHN), else a shapefile — see src/raw_layers.py
+    candidates = find_raw_files(raw, "streams")
+    if not candidates:
+        logger.warning("No stream data found in %s", search_locations(raw, "streams"))
+        return None
+    if candidates[0].suffix.lower() == ".gdb":
+        gdb_path = candidates[0]
+        stream_layer = RAW_LAYERS["streams"].gdb_layer
+        logger.info("Ingesting streams from GDB: %s (layer: %s)", gdb_path, stream_layer)
         try:
-            gdf = gpd.read_file(gdb_path, layer="nshn_v2_wa_line")
+            gdf = gpd.read_file(gdb_path, layer=stream_layer)
         except Exception:
             # Try reading any line layer
             import fiona
@@ -363,12 +365,7 @@ def ingest_streams(config: Config) -> Path | None:
                 logger.warning("No suitable stream line layer found in %s", gdb_path)
                 return None
     else:
-        # Try shapefile
-        shp_candidates = list((raw / "hydro").glob("*.shp"))
-        if not shp_candidates:
-            logger.warning("No stream data found in %s", raw / "hydro")
-            return None
-        gdf = gpd.read_file(shp_candidates[0])
+        gdf = gpd.read_file(candidates[0])
 
     gdf = _reproject_to_working(gdf, config.working_crs)
 
@@ -393,24 +390,22 @@ def ingest_roads_from_osm(config: Config) -> Path | None:
         logger.info("Roads already processed: %s", out_path)
         return out_path
 
-    pbf_candidates = list((raw / "roads").glob("*.osm.pbf"))
-    if not pbf_candidates:
-        # Try shapefile/gpkg fallback
-        for ext in ("*.gpkg", "*.shp"):
-            candidates = list((raw / "roads").glob(ext))
-            if candidates:
-                gdf = gpd.read_file(candidates[0])
-                gdf = _reproject_to_working(gdf, config.working_crs)
-                bbox_geom = box(*config.study_area.bbox)
-                gdf = gdf[gdf.intersects(bbox_geom)].copy()
-                processed.mkdir(parents=True, exist_ok=True)
-                _write_gpkg(gdf, out_path)
-                logger.info("Roads processed from shapefile: %s (%d features)", out_path, len(gdf))
-                return out_path
-        logger.warning("No road data found in %s", raw / "roads")
+    # OSM PBF first, else a GPKG, else a shapefile — see src/raw_layers.py
+    candidates = find_raw_files(raw, "roads")
+    if not candidates:
+        logger.warning("No road data found in %s", search_locations(raw, "roads"))
         return None
+    if not candidates[0].name.endswith(".osm.pbf"):
+        gdf = gpd.read_file(candidates[0])
+        gdf = _reproject_to_working(gdf, config.working_crs)
+        bbox_geom = box(*config.study_area.bbox)
+        gdf = gdf[gdf.intersects(bbox_geom)].copy()
+        processed.mkdir(parents=True, exist_ok=True)
+        _write_gpkg(gdf, out_path)
+        logger.info("Roads processed from shapefile: %s (%d features)", out_path, len(gdf))
+        return out_path
 
-    pbf_path = pbf_candidates[0]
+    pbf_path = candidates[0]
     logger.info("Ingesting roads from OSM PBF: %s", pbf_path)
 
     # Read lines layer from OSM PBF — filter to road types
@@ -443,15 +438,13 @@ def ingest_buildings(config: Config) -> Path | None:
         logger.info("Buildings already processed: %s", out_path)
         return out_path
 
-    # Search recursively for GPKG files in buildings dir
-    gpkg_candidates = list((raw / "buildings").rglob("*.gpkg"))
-    shp_candidates = list((raw / "buildings").rglob("*.shp"))
-
-    if not gpkg_candidates and not shp_candidates:
-        logger.warning("No building data found in %s", raw / "buildings")
+    # GPKGs (searched recursively), else shapefiles — see src/raw_layers.py
+    candidates = find_raw_files(raw, "buildings")
+    if not candidates:
+        logger.warning("No building data found in %s", search_locations(raw, "buildings"))
         return None
 
-    src_file = gpkg_candidates[0] if gpkg_candidates else shp_candidates[0]
+    src_file = candidates[0]
     logger.info("Ingesting buildings from %s", src_file)
 
     gdf = gpd.read_file(src_file)
@@ -477,11 +470,10 @@ def ingest_land_cover(config: Config) -> Path | None:
         logger.info("Land cover already processed: %s", out_path)
         return out_path
 
-    # Look for polygon shapefile
-    candidates = list((raw / "land-cover").glob("*POLY*.shp")) + \
-                 list((raw / "land-cover").glob("*.shp"))
+    # Look for polygon shapefile — see src/raw_layers.py
+    candidates = find_raw_files(raw, "land_cover")
     if not candidates:
-        logger.warning("No land cover data found in %s", raw / "land-cover")
+        logger.warning("No land cover data found in %s", search_locations(raw, "land_cover"))
         return None
 
     src_file = candidates[0]
@@ -510,9 +502,9 @@ def ingest_crown_land(config: Config) -> Path | None:
         logger.info("Crown land already processed: %s", out_path)
         return out_path
 
-    candidates = list((raw / "crown-land").glob("*.shp"))
+    candidates = find_raw_files(raw, "crown_land")
     if not candidates:
-        logger.warning("No Crown land data found in %s", raw / "crown-land")
+        logger.warning("No Crown land data found in %s", search_locations(raw, "crown_land"))
         return None
 
     src_file = candidates[0]
@@ -542,9 +534,9 @@ def ingest_protected_areas(config: Config) -> Path | None:
         return out_path
 
     # Look for shapefile in exclusions directory (may be in subdirectory)
-    shp_candidates = list((raw / "exclusions").rglob("*.shp"))
+    shp_candidates = find_raw_files(raw, "protected_areas")
     if not shp_candidates:
-        logger.warning("No protected areas data found in %s", raw / "exclusions")
+        logger.warning("No protected areas data found in %s", search_locations(raw, "protected_areas"))
         return None
 
     src_file = shp_candidates[0]
@@ -890,12 +882,7 @@ def ingest_parcels(
         if gdf is None or gdf.empty:
             return None
     else:
-        candidates = (
-            list((raw / "parcels").rglob("*.gpkg"))
-            + list((raw / "parcels").rglob("*.shp"))
-            + list((raw / "parcels").rglob("*.geojson"))
-            + list((raw / "parcels").rglob("*.gdb"))
-        )
+        candidates = find_raw_files(raw, "parcels")
         if not candidates:
             logger.warning(
                 "No parcel data found in %s — download NSPRD parcels (GeoNOVA) "
@@ -1364,10 +1351,7 @@ def ingest_waterbodies(config: Config) -> Path | None:
         logger.info("Waterbodies already processed: %s", out_path)
         return out_path
 
-    candidates = (
-        list((raw / "water").rglob("*.shp")) + list((raw / "water").rglob("*.gpkg"))
-        + list((raw / "waterbodies").rglob("*.shp")) + list((raw / "waterbodies").rglob("*.gpkg"))
-    )
+    candidates = find_raw_files(raw, "waterbodies")
     if not candidates:
         logger.info("No waterbody polygon layer found (optional); skipping")
         return None
@@ -1405,12 +1389,10 @@ def ingest_civic(config: Config) -> Path | None:
         logger.info("Civic addresses already processed: %s", out_path)
         return out_path
 
-    civic_dir = raw / "civic"
-    candidates = sorted(
-        p for ext in ("*.gpkg", "*.shp", "*.geojson") for p in civic_dir.rglob(ext)
-    ) if civic_dir.exists() else []
+    candidates = find_raw_files(raw, "civic")
     if not candidates:
-        logger.info("No civic address data found in %s (optional); skipping", civic_dir)
+        logger.info("No civic address data found in %s (optional); skipping",
+                    search_locations(raw, "civic"))
         return None
 
     frames = []
