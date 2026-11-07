@@ -256,6 +256,18 @@ HYDRO_DRAINAGE_WINDOW_M = 60.0
 HYDRO_DRAINAGE_JUNCTION_SKIP_M = 40.0
 # Spacing (m) of the samples taken along each stream line.
 HYDRO_PROFILE_STEP_M = 5.0
+# Head (SPEC §3.1) is read off a channel profile: each sample takes the lowest
+# DEM pixel within this many pixels (3x3 at 1), so a line drawn a few metres
+# up the bank reads the channel bed, then a running median over ±this many
+# metres along the line damps pixel noise. Head is then the smaller of the
+# drops on the carved (min over the HYDRO_HEAD_CONDITION_M upstream) and
+# filled (max over the HYDRO_HEAD_CONDITION_M downstream) profile, so DEM
+# bumps along the channel aren't head. The window is finite so a road
+# embankment or DEM rise further down the flow path can't wipe out the head
+# of every pair above it.
+HYDRO_CHANNEL_SNAP_PX = 1
+HYDRO_HEAD_SMOOTH_M = 20.0
+HYDRO_HEAD_CONDITION_M = 200.0
 
 # Solar aspect classification
 SOLAR_OPTIMAL_ASPECT = (135, 225)

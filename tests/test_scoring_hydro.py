@@ -173,15 +173,19 @@ def test_coastline_next_to_a_bluff_scores_no_hydro(tmp_path):
 
 def _flat_dem_brook(tmp_path):
     """A 1 km cell-crossing brook on a flat DEM, whose MINZ/MAXZ attributes
-    claim 20 m of drop: 0 with the DEM, but 80 if head falls back to MINZ/MAXZ."""
+    claim 20 m of drop: 0 with the DEM, but 80 if head falls back to MINZ/MAXZ.
+
+    A second brook, 2 km away and off the DEM, needs the fallback head (and so
+    the per-cell elevation-range precompute)."""
     xmin, ymin = 380000.0, 4900000.0
     bounds = (xmin, ymin, xmin + 1000, ymin + 1000)
     cell = box(xmin + 375, ymin + 375, xmin + 625, ymin + 625)
     candidates = gpd.GeoDataFrame({"cell_id": [0]}, geometry=[cell], crs="EPSG:2961")
     gpd.GeoDataFrame(
-        {"FEAT_CODE": ["WARV50"], "LINE_CLASS": [1], "FLOWDIR": [1],
-         "MINZ": [10.0], "MAXZ": [30.0]},
-        geometry=[LineString([(xmin, ymin + 500), (xmin + 1000, ymin + 500)])],
+        {"FEAT_CODE": ["WARV50", "WARV50"], "LINE_CLASS": [1, 1], "FLOWDIR": [1, 1],
+         "MINZ": [10.0, 10.0], "MAXZ": [30.0, 30.0]},
+        geometry=[LineString([(xmin, ymin + 500), (xmin + 1000, ymin + 500)]),
+                  LineString([(xmin + 3000, ymin + 500), (xmin + 4000, ymin + 500)])],
         crs="EPSG:2961",
     ).to_file(tmp_path / "streams.gpkg", driver="GPKG")
     _write_raster(tmp_path / "dem.tif", bounds, np.full((100, 100), 20.0))
@@ -226,7 +230,7 @@ FACC_BOUNDS = (X0, Y0 - 500, X0 + 1000, Y0 + 500)  # 50 x 50 px of 20 m
 BROOK_CELLS = 60000  # 60,000 px of 400 m² = 24 km²
 
 
-def _wandering_brook(tmp_path, channel_rows=None, line=None, flowdir=1):
+def _wandering_brook(tmp_path, channel_rows=None, line=None, flowdir=1, dem_fn=None):
     """A 24 km² routed channel 60 m north of the mapped brook line, except
     for 40 m around x = X0+400 where the line crosses it.
 
@@ -241,9 +245,9 @@ def _wandering_brook(tmp_path, channel_rows=None, line=None, flowdir=1):
     for c, r in channel_rows.items():
         facc[r, c] = BROOK_CELLS
     _write_raster(tmp_path / "flow_accumulation.tif", FACC_BOUNDS, facc, nodata=-32768)
-    xs = np.linspace(X0, X0 + 1000, 100)
-    _write_raster(tmp_path / "dem.tif", FACC_BOUNDS,
-                  np.tile(100.0 - 0.02 * (xs - X0), (100, 1)))
+    xs = np.arange(5.0, 1000, 10.0)  # 10 m DEM pixel centres, metres east of X0
+    dem_fn = dem_fn or (lambda x: 100.0 - 0.02 * x)
+    _write_raster(tmp_path / "dem.tif", FACC_BOUNDS, np.tile(dem_fn(xs), (100, 1)))
     line = line or LineString([(X0, Y0 + 10), (X0 + 1000, Y0 + 10)])
     gpd.GeoDataFrame(
         {"FEAT_CODE": ["WARV50"], "LINE_CLASS": [1], "FLOWDIR": [flowdir],
@@ -265,14 +269,99 @@ def test_drainage_is_read_along_the_line_not_at_one_point(tmp_path):
 
 
 def test_drainage_read_skips_the_receiving_river_at_the_junction(tmp_path):
-    """A tributary whose only big read is in its last 40 m (where it meets its
-    receiving river) must not take the receiving river's drainage."""
-    rows = {49: 24}  # x in [X0+980, X0+1000): the junction pixel at the line's end
-    candidates, config = _wandering_brook(tmp_path, channel_rows=rows)
-    cell = box(X0 + 825, Y0 - 115, X0 + 1075, Y0 + 135)  # centre 50 m from the end
-    candidates = candidates.set_geometry([cell])
+    """A tributary whose only big read is at its downstream end (where it
+    meets its receiving river) must not take the receiving river's drainage."""
+    from src.scoring.hydro import _DrainageGrid, _drainage_profile, _line_samples
+
+    _wandering_brook(tmp_path, channel_rows={49: 24})  # x in [X0+980, X0+1000)
+    line = LineString([(X0, Y0 + 10), (X0 + 1000, Y0 + 10)])
+    s, xy = _line_samples(line)
+    with rasterio.open(tmp_path / "flow_accumulation.tif") as src:
+        grid = _DrainageGrid(src)
+    # drawn in its flow direction (FLOWDIR 1): the junction end is not read
+    assert np.nanmax(_drainage_profile(grid, s, xy, line.length, 1)) < MIN_DRAINAGE_AREA_KM2
+    # direction unknown (FLOWDIR 0): the end is kept
+    prof = _drainage_profile(grid, s, xy, line.length, 0)
+    assert prof[-1] == pytest.approx(24.0)
+    assert prof[s < 880].max() < MIN_DRAINAGE_AREA_KM2  # only within 60 m of it
+
+
+# --- head from SPEC §3.1 intake/outfall pairs (H2 + H3) ---------------------
+ON_LINE = {c: 24 for c in range(50)}  # 24 km² read all along the brook
+
+
+def test_dem_undulation_on_a_flat_reach_is_not_head(tmp_path):
+    """Regression: head was max - min of ~21 samples in any order, so ±2 m of
+    DEM undulation along a flat reach gave ~4 m of 'head' (score 100). The
+    reach starts on a crest, so a profile that is only carved (running min
+    from upstream) would still find 4 m from the crest to the first trough."""
+    candidates, config = _wandering_brook(
+        tmp_path, channel_rows=ON_LINE,
+        dem_fn=lambda x: 20.0 + 2.0 * np.cos(2 * np.pi * x / 150.0))
     assert score_hydro(candidates, config).iloc[0] == 0
-    # digitised the other way (FLOWDIR 0: direction unknown) the end is kept
-    candidates, config = _wandering_brook(tmp_path, channel_rows=rows, flowdir=0)
+
+
+def test_profile_rising_downstream_has_no_head(tmp_path):
+    """Regression (cell 263): a reach whose DEM profile ends 2 m higher than
+    it starts, plus undulation, still got 3+ m of head."""
+    candidates, config = _wandering_brook(
+        tmp_path, channel_rows=ON_LINE,
+        dem_fn=lambda x: 20.0 + 0.002 * x + 1.0 * np.sin(2 * np.pi * x / 150.0))
+    assert score_hydro(candidates, config).iloc[0] == 0
+
+
+def test_head_comes_from_pairs_at_most_500_m_apart(tmp_path):
+    """Regression: samples up to 1 km apart (±500 m), both ends possibly
+    outside the cell buffer, added two 2 m drops 900 m apart into 4 m."""
+    candidates, config = _wandering_brook(
+        tmp_path, channel_rows=ON_LINE,
+        dem_fn=lambda x: np.where(x < 50, 30.0, np.where(x < 950, 28.0, 26.0)))
+    assert score_hydro(candidates, config).iloc[0] == 0
+
+
+def test_pairs_run_on_into_the_downstream_line(tmp_path):
+    """The flow path continues past a segment break: a cell at the end of an
+    upper segment reaches the drop on the segment it flows into."""
+    candidates, config = _wandering_brook(
+        tmp_path, channel_rows=ON_LINE,
+        dem_fn=lambda x: np.where(x < 700, 50.0, 50.0 - 0.05 * (x - 700)))
+    upper = LineString([(X0, Y0 + 10), (X0 + 500, Y0 + 10)])
+    lower = LineString([(X0 + 500, Y0 + 10), (X0 + 1000, Y0 + 10)])
+    gpd.GeoDataFrame(
+        {"FEAT_CODE": ["WARV50", "WARV50"], "LINE_CLASS": [1, 1], "FLOWDIR": [1, 1]},
+        geometry=[upper, lower], crs="EPSG:2961",
+    ).to_file(tmp_path / "streams.gpkg", driver="GPKG")
+    # cell x in [125, 375] m, so its buffer is x in [25, 475]: all on the upper line
+    cell = box(X0 + 125, Y0 - 65, X0 + 375, Y0 + 185)
     candidates = candidates.set_geometry([cell])
+    # pair from x=470 (in the buffer) to x=970: 13.5 m of head at 24 km²
     assert score_hydro(candidates, config).iloc[0] == 100
+
+
+def test_pair_flow_is_taken_at_the_upper_end():
+    from src.scoring.hydro import _pair_powers
+
+    z = np.linspace(30.0, 0.0, 31)                 # 1 m per sample, downhill
+    area = np.where(np.arange(31) < 15, 0.3, 24.0)  # small above, big below
+    valid = np.ones(31, dtype=bool)
+    p = _pair_powers(z, valid, area, n_own=31, k=10)
+    assert (p[:15] == 0).all()                      # intake under 0.5 km²
+    assert p[15] == pytest.approx(_estimate_power(_estimate_flow_rate(24.0), 10.0))
+    # head is upstream minus downstream: an uphill pair has none
+    assert (_pair_powers(z[::-1], valid, np.full(31, 24.0), 31, 10) == 0).all()
+
+
+def test_a_rise_far_down_the_flow_path_keeps_the_head_above_it():
+    """Regression (cell 6062): the filled profile was a running max over the
+    whole downstream path, so a 2 m DEM rise on the next line (a road fill,
+    or the DEM off the channel) zeroed every pair above it on the line."""
+    from src.scoring.hydro import _pair_powers
+
+    z = 30.0 - 0.05 * np.arange(300)               # 1% grade: 5 m per 500 m
+    z[250:256] = 40.0                              # rise 1,250 m downstream
+    area = np.full(300, 24.0)
+    p = _pair_powers(z, np.ones(300, dtype=bool), area, n_own=300, k=100)
+    assert p[0] == pytest.approx(_estimate_power(_estimate_flow_rate(24.0), 5.0))
+    # a pair ending within HYDRO_HEAD_CONDITION_M above the rise is still
+    # read as ponded behind it
+    assert p[120] == 0

@@ -7,7 +7,6 @@ import geopandas as gpd
 import numpy as np
 import pandas as pd
 import shapely
-from shapely.geometry import LineString
 from shapely.strtree import STRtree
 
 from src.config import Config
@@ -15,8 +14,11 @@ from src.constants import (
     GRAVITY,
     DEFAULT_EFFICIENCY,
     FLOW_ACCUM_MIN_VALID_CELLS,
+    HYDRO_CHANNEL_SNAP_PX,
     HYDRO_DRAINAGE_JUNCTION_SKIP_M,
     HYDRO_DRAINAGE_WINDOW_M,
+    HYDRO_HEAD_CONDITION_M,
+    HYDRO_HEAD_SMOOTH_M,
     HYDRO_PAIR_SEPARATIONS,
     HYDRO_POWER_THRESHOLDS,
     HYDRO_PROFILE_STEP_M,
@@ -163,66 +165,157 @@ def _lookup_score(value: float, thresholds: list[tuple]) -> int:
     return 0
 
 
-def _sample_dem(dem_src, x: float, y: float) -> float | None:
-    """Sample DEM elevation at a point. Returns None if nodata or error."""
-    try:
-        vals = list(dem_src.sample([(x, y)]))
-        elev = float(vals[0][0])
-        nodata = dem_src.nodata
-        if nodata is not None and elev == nodata:
-            return None
-        return elev
-    except Exception:
-        return None
+def _channel_elevations(dem_src, xy: np.ndarray) -> np.ndarray:
+    """Channel-bed elevation at each (x, y): the lowest DEM pixel within
+    HYDRO_CHANNEL_SNAP_PX pixels, so a mapped line a few metres up the bank
+    still reads the channel. NaN where the DEM has no data or no coverage."""
+    r = HYDRO_CHANNEL_SNAP_PX
+    out = np.full(len(xy), np.nan)
+    if len(xy) == 0:
+        return out
+    dem = dem_src.read(1).astype("float32")
+    nodata = dem_src.nodata
+    transform = dem_src.transform
+    if nodata is not None and not np.isnan(nodata):
+        dem[dem == nodata] = np.nan
+    dem[~np.isfinite(dem)] = np.nan
+    cols, rows = ~transform * (xy[:, 0], xy[:, 1])
+    rows = np.floor(rows).astype(np.int64)
+    cols = np.floor(cols).astype(np.int64)
+    inside = (rows >= 0) & (rows < dem.shape[0]) & (cols >= 0) & (cols < dem.shape[1])
+    ri, ci = rows[inside], cols[inside]
+    best = np.full(len(ri), np.nan, dtype="float32")
+    for dr in range(-r, r + 1):
+        for dc in range(-r, r + 1):
+            rr = np.clip(ri + dr, 0, dem.shape[0] - 1)
+            cc = np.clip(ci + dc, 0, dem.shape[1] - 1)
+            best = np.fmin(best, dem[rr, cc])
+    # the pixel under the point itself must have data
+    best[np.isnan(dem[ri, ci])] = np.nan
+    out[inside] = best
+    return out
 
 
-def _compute_head_along_river(
-    dem_src, stream_geom, cell_geom, search_dist: float = 500.0
-) -> tuple[float, bool]:
-    """Compute available head by sampling DEM along the river near the cell.
+def _running_median(z: np.ndarray, half: int) -> np.ndarray:
+    """NaN-aware running median over ±half samples (edges padded)."""
+    import warnings
 
-    Returns (head_m, had_data): head_m is the elevation difference along the
-    river, and had_data indicates whether DEM data was available along the
-    stream (False = coverage gap, True = we got readings even if head is low).
+    from numpy.lib.stride_tricks import sliding_window_view
+
+    if half <= 0 or len(z) == 0:
+        return z.copy()
+    padded = np.pad(z, half, mode="edge")
+    with warnings.catch_warnings():  # all-NaN window -> NaN (no DEM there)
+        warnings.simplefilter("ignore", RuntimeWarning)
+        return np.nanmedian(sliding_window_view(padded, 2 * half + 1), axis=1)
+
+
+def _flows_reversed(z: np.ndarray, flowdir) -> bool:
+    """True if the line runs upstream in its digitised direction.
+
+    NSHN FLOWDIR = 1 lines are digitised downstream. Otherwise (banks of
+    double-line rivers, connectors) the flow direction is the DEM's downhill
+    direction along the line: the sign of a least-squares slope of elevation
+    against distance.
     """
-    cell_centroid = cell_geom.centroid
-    nearest_dist_along = stream_geom.project(cell_centroid)
-    stream_length = stream_geom.length
+    if _flowdir_is_downstream(flowdir):
+        return False
+    ok = np.isfinite(z)
+    if ok.sum() < 2:
+        return False
+    idx = np.arange(len(z))[ok]
+    return bool(np.polyfit(idx, z[ok], 1)[0] > 0)
 
-    if stream_length < 10:
-        return 0.0, False
 
-    start = max(0.0, nearest_dist_along - search_dist)
-    end = min(stream_length, nearest_dist_along + search_dist)
-    sample_length = end - start
+def _condition_window() -> int:
+    """HYDRO_HEAD_CONDITION_M in samples, rounded to an even count."""
+    return 2 * int(round(HYDRO_HEAD_CONDITION_M / HYDRO_PROFILE_STEP_M / 2))
 
-    if sample_length < 20:
-        return 0.0, False
 
-    n_samples = max(5, min(20, int(sample_length / 25)))
-    elevations = []
-    for i in range(n_samples + 1):
-        dist = start + (end - start) * i / n_samples
-        pt = stream_geom.interpolate(dist)
-        elev = _sample_dem(dem_src, pt.x, pt.y)
-        if elev is not None and elev > -100:
-            elevations.append(elev)
+def _conditioned_profiles(z: np.ndarray, w: int) -> tuple[np.ndarray, np.ndarray]:
+    """Carved and filled versions of a channel profile ordered upstream first.
 
-    if len(elevations) < 2:
-        return 0.0, False
+    carved[j] is the lowest sample in z[j - w .. j] (the channel can't be
+    higher than anywhere just upstream of it), filled[j] the highest in
+    z[j .. j + w] (nor lower than anywhere just downstream). w is an even
+    number of samples; NaNs (no DEM) are skipped over.
+    """
+    from scipy.ndimage import maximum_filter1d, minimum_filter1d
 
-    head = max(elevations) - min(elevations)
-    min_elev = min(elevations)
+    if w % 2:
+        raise ValueError(f"conditioning window must be an even sample count, got {w}")
+    nan = np.isnan(z)
+    carved = minimum_filter1d(np.where(nan, np.inf, z), w + 1, mode="nearest", origin=w // 2)
+    filled = maximum_filter1d(np.where(nan, -np.inf, z), w + 1, mode="nearest", origin=-(w // 2))
+    return (np.where(np.isfinite(carved), carved, np.nan),
+            np.where(np.isfinite(filled), filled, np.nan))
 
-    # Tidal/estuarine reaches near sea level have no usable head ONLY when they
-    # are also essentially flat. A steep stream dropping into tidewater keeps its
-    # head — so test gradient, don't clamp head to the (near-zero) min elevation.
-    if min_elev < 5.0:
-        gradient = head / sample_length if sample_length > 0 else 0.0
-        if gradient < 0.005:  # < 0.5% slope near sea level → flat tidal channel
-            head = 0.0
 
-    return head, True
+def _pair_powers(z: np.ndarray, z_valid: np.ndarray, drainage: np.ndarray,
+                 n_own: int, k: int) -> np.ndarray:
+    """Continuous low-flow power (W) of each intake/outfall pair (a, a + k).
+
+    z is the channel profile, upstream first. a runs over the line's own
+    samples (0 .. n_own-1); a + k may run on into the downstream continuation.
+    Gross head is the upstream minus the downstream elevation along the flow
+    direction, read off the profile conditioned so water can't run uphill
+    within HYDRO_HEAD_CONDITION_M: the smaller of the drops on the carved and
+    the filled profile. A DEM bump along the channel is then no head, whether
+    the pair starts on its crest (the carved drop is 0) or ends in its trough
+    (the filled drop is 0). On NSHN-flat reaches (MAXZ - MINZ < 1 m) this
+    cuts the 50-500 m pairs that clear MIN_HEAD_M on DEM undulation alone
+    from 0.40% to 0.04%; on steep reaches the median 500 m head is unchanged.
+    The window is finite so a rise further down the flow path (a road fill,
+    the next line's DEM) doesn't raise the filled profile of every sample
+    above it. Flow is taken at the pair's upper end (the intake). Pairs under
+    MIN_HEAD_M of head, under MIN_DRAINAGE_AREA_KM2 at the intake, or with
+    either end off the DEM get 0.
+    """
+    n_upper = min(n_own, len(z) - k)
+    if n_upper <= 0:
+        return np.zeros(0)
+    carved, filled = _conditioned_profiles(z, _condition_window())
+    a = np.arange(n_upper)
+    b = a + k
+    head = np.fmin(carved[a] - carved[b], filled[a] - filled[b])
+    area = drainage[a]
+    ok = z_valid[a] & z_valid[b] & (head >= MIN_HEAD_M) & (area >= MIN_DRAINAGE_AREA_KM2)
+    power = np.zeros(n_upper)
+    power[ok] = _estimate_power(_estimate_flow_rate(area[ok]), head[ok])
+    return power
+
+
+def _explode_lines(streams: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
+    """One single-part LineString per row (multi-part NSHN features are merged
+    where their parts join end to start, then split)."""
+    geoms = shapely.line_merge(streams.geometry.values, directed=True)
+    out = streams.set_geometry(gpd.GeoSeries(geoms, index=streams.index, crs=streams.crs))
+    out = out.explode(index_parts=False).reset_index(drop=True)
+    return out[out.geometry.geom_type == "LineString"].reset_index(drop=True)
+
+
+def _downstream_successors(streams: gpd.GeoDataFrame, drainage_at_start: np.ndarray) -> np.ndarray:
+    """For each FLOWDIR = 1 line, the FLOWDIR = 1 line that starts where it
+    ends (the biggest one at a split), or -1. Lines digitised in their flow
+    direction chain into the downstream flow path the SPEC's pairs run along.
+    """
+    succ = np.full(len(streams), -1, dtype=np.int64)
+    down = np.array([_flowdir_is_downstream(f) for f in streams.get("FLOWDIR", [None] * len(streams))])
+    if not down.any():
+        return succ
+    coords = [shapely.get_coordinates(g) for g in streams.geometry.values]
+
+    def key(c):
+        return (round(float(c[0]), 1), round(float(c[1]), 1))
+
+    starts: dict[tuple, list[int]] = {}
+    for i in np.flatnonzero(down):
+        starts.setdefault(key(coords[i][0]), []).append(int(i))
+    for i in np.flatnonzero(down):
+        nxt = [j for j in starts.get(key(coords[i][-1]), []) if j != i]
+        if nxt:
+            succ[i] = max(nxt, key=lambda j: np.nan_to_num(drainage_at_start[j], nan=-1.0))
+    return succ
 
 
 def _estimate_drainage_area(stream, all_streams: gpd.GeoDataFrame) -> float:
@@ -332,15 +425,21 @@ def _cell_elevation_ranges(candidates: gpd.GeoDataFrame, dem_path: Path) -> dict
 
 @register("hydro")
 def score_hydro(candidates: gpd.GeoDataFrame, config: Config) -> pd.Series:
-    """Score cells by micro-hydro potential.
+    """Score cells by micro-hydro potential (SPEC §3.1).
 
-    Approach:
-    1. Find streams within STREAM_BUFFER_M of each cell (property can
-       access a nearby river even if it doesn't directly cross the cell).
-    2. Estimate drainage area from stream class/attributes.
-    3. Sample DEM along a longer river stretch (up to 500m each direction)
-       to get realistic head available for a penstock run.
-    4. Score based on estimated power output.
+    1. Sample every flowing NSHN line every HYDRO_PROFILE_STEP_M: channel
+       elevation from the DEM, drainage area from the flow-accumulation
+       raster (else the segment-length proxy).
+    2. Orient each line downstream (FLOWDIR = 1, else the DEM's downhill
+       direction) and chain FLOWDIR = 1 lines into the line they flow into,
+       so pairs follow the downstream flow path past segment breaks.
+    3. Intake/outfall pairs HYDRO_PAIR_SEPARATIONS apart: gross head =
+       upstream minus downstream elevation, flow at the intake (upper end).
+    4. A cell's hydro score is its best pair with at least one end within
+       STREAM_BUFFER_M of the cell, banded by continuous low-flow power.
+
+    Lines with no DEM coverage at all fall back to per-cell head from the
+    cell's elevation range, the line's MINZ/MAXZ, or a 2% slope guess.
     """
     streams_path = config.paths.processed / "streams.gpkg"
     dem_path = config.paths.processed / "dem.tif"
@@ -352,10 +451,10 @@ def score_hydro(candidates: gpd.GeoDataFrame, config: Config) -> pd.Series:
     streams = gpd.read_file(streams_path)
     if streams.crs and str(streams.crs) != config.working_crs:
         streams = streams.to_crs(config.working_crs)
-
-    streams = _filter_to_flowing_water(streams)
-
-    stream_tree = STRtree(streams.geometry.values)
+    streams = _explode_lines(_filter_to_flowing_water(streams))
+    best = np.zeros(len(candidates))
+    if streams.empty:
+        return pd.Series(best, index=candidates.index, dtype=float)
 
     # Prefer a validated flow-accumulation raster for drainage area; otherwise
     # fall back to the segment-length proxy (and the confidence score reflects it).
@@ -373,91 +472,133 @@ def score_hydro(candidates: gpd.GeoDataFrame, config: Config) -> pd.Series:
             drainage_grid = None
     if drainage_grid is None:
         logger.info("Hydro: flow-accumulation unavailable/invalid; using segment-length proxy")
-    drainage_profiles: dict[int, tuple[np.ndarray, np.ndarray]] = {}
 
+    # --- 1. sample every line ------------------------------------------------
+    geoms = streams.geometry.values
+    flowdirs = (streams["FLOWDIR"].values if "FLOWDIR" in streams.columns
+                else np.full(len(streams), None))
+    samples = [_line_samples(g) for g in geoms]
+    counts = np.array([len(s) for s, _ in samples])
+    first = np.concatenate([[0], np.cumsum(counts)[:-1]])
+    xy_all = np.vstack([xy for _, xy in samples])
+
+    drainage = np.full(len(xy_all), np.nan)
+    for i, (s, xy) in enumerate(samples):
+        sl = slice(first[i], first[i] + counts[i])
+        if drainage_grid is not None:
+            drainage[sl] = _drainage_profile(drainage_grid, s, xy, geoms[i].length, flowdirs[i])
+        miss = np.isnan(drainage[sl])
+        if miss.any():  # no flow-accumulation read here: segment-length proxy
+            drainage[sl] = np.where(miss, _estimate_drainage_area(streams.iloc[i], streams),
+                                    drainage[sl])
+
+    z_all = np.full(len(xy_all), np.nan)
     dem_src = _open_dem(dem_path)
-    has_dem = dem_src is not None
-    # Per-cell elevation range: only a fallback head for streams with no DEM
-    # coverage along them. Its failure must not switch the DEM off for head.
-    cell_zonal = _cell_elevation_ranges(candidates, dem_path) if has_dem else None
+    if dem_src is not None:
+        try:
+            z_all = _channel_elevations(dem_src, xy_all)
+        except Exception as exc:
+            logger.warning("Hydro: could not read DEM %s (%s: %s); head falls back to "
+                           "stream MINZ/MAXZ or a 2%% slope guess",
+                           dem_path, type(exc).__name__, exc)
+        finally:
+            dem_src.close()
+    half = int(round(HYDRO_HEAD_SMOOTH_M / HYDRO_PROFILE_STEP_M))
+    for i in range(len(streams)):
+        sl = slice(first[i], first[i] + counts[i])
+        z_all[sl] = _running_median(z_all[sl], half)
 
-    scores = []
-    for idx, cell in candidates.iterrows():
-        # Search for streams within buffer distance of cell
-        # A property near a river can still use it for hydro
-        buffered = cell.geometry.buffer(STREAM_BUFFER_M)
-        hit_idxs = stream_tree.query(buffered, predicate="intersects")
+    # --- 2. orient downstream, chain into the downstream line ----------------
+    order = []
+    for i in range(len(streams)):
+        idx = np.arange(first[i], first[i] + counts[i])
+        order.append(idx[::-1] if _flows_reversed(z_all[idx], flowdirs[i]) else idx)
+    succ = _downstream_successors(streams, drainage[first])
+    has_dem = np.array([bool(np.isfinite(z_all[o]).any()) for o in order])
 
-        if len(hit_idxs) == 0:
-            scores.append(0)
-            continue
+    # --- 3. intake/outfall pairs ---------------------------------------------
+    ks = sorted({int(round(sep / HYDRO_PROFILE_STEP_M)) for sep in HYDRO_PAIR_SEPARATIONS})
+    point_power = np.zeros(len(xy_all))
+    for i in np.flatnonzero(has_dem):
+        ext = _downstream_path(order, succ, i, max(ks))
+        z = z_all[ext]
+        for k in ks:
+            power = _pair_powers(z, np.isfinite(z), drainage[ext], len(order[i]), k)
+            a = np.flatnonzero(power > 0)
+            if len(a):
+                np.maximum.at(point_power, ext[a], power[a])
+                np.maximum.at(point_power, ext[a + k], power[a])
 
-        best_power = 0.0
+    # --- 4. best pair end within the buffer of each cell ---------------------
+    min_scoring = min(low for low, _, score in HYDRO_POWER_THRESHOLDS if score > 0)
+    pts = np.flatnonzero(point_power >= min_scoring)
+    if len(pts):
+        cell_tree = STRtree(candidates.geometry.values)
+        pt_idx, cell_idx = cell_tree.query(
+            shapely.points(xy_all[pts]), predicate="dwithin", distance=STREAM_BUFFER_M)
+        np.maximum.at(best, cell_idx, point_power[pts][pt_idx])
 
-        for i in hit_idxs:
-            stream = streams.iloc[i]
-            stream_geom = stream.geometry
+    # --- lines with no DEM coverage: per-cell fallback head ------------------
+    no_dem = np.flatnonzero(~has_dem)
+    if len(no_dem):
+        logger.info("Hydro: %d of %d stream lines have no DEM coverage; using "
+                    "fallback head for them", len(no_dem), len(streams))
+        # Per-cell elevation range: a fallback head only. Its failure must not
+        # switch the DEM off for the lines it does cover.
+        cell_zonal = _cell_elevation_ranges(candidates, dem_path) if dem_path.exists() else None
+        best = np.maximum(best, _fallback_powers(
+            candidates, streams.iloc[no_dem], first[no_dem], drainage, cell_zonal))
 
-            # Drainage area at the point on the stream nearest this cell,
-            # read along the stream's own line (see _drainage_profile).
-            drainage_area = None
-            if drainage_grid is not None:
-                if i not in drainage_profiles:
-                    s, xy = _line_samples(stream_geom)
-                    drainage_profiles[i] = (s, _drainage_profile(
-                        drainage_grid, s, xy, stream_geom.length, stream.get("FLOWDIR")))
-                s, prof = drainage_profiles[i]
-                j = int(np.clip(np.rint(stream_geom.project(cell.geometry.centroid)
-                                        / HYDRO_PROFILE_STEP_M), 0, len(s) - 1))
-                if len(s) and np.isfinite(prof[j]):
-                    drainage_area = float(prof[j])
-            if drainage_area is None:
-                drainage_area = _estimate_drainage_area(stream, streams)
-            if drainage_area < MIN_DRAINAGE_AREA_KM2:
+    scores = [_lookup_score(p, HYDRO_POWER_THRESHOLDS) for p in best]
+    return pd.Series(scores, index=candidates.index, dtype=float)
+
+
+def _downstream_path(order: list, succ: np.ndarray, i: int, reach: int) -> np.ndarray:
+    """Sample indices of line i (upstream first) followed by up to `reach`
+    samples of the lines it flows into."""
+    parts = [order[i]]
+    n_more = 0
+    j, seen = succ[i], {i}
+    while j >= 0 and j not in seen and n_more < reach:
+        parts.append(order[j])
+        n_more += len(order[j])
+        seen.add(j)
+        j = succ[j]
+    return np.concatenate(parts)
+
+
+def _fallback_powers(candidates: gpd.GeoDataFrame, lines: gpd.GeoDataFrame,
+                     line_first: np.ndarray, drainage: np.ndarray,
+                     cell_zonal: dict | None) -> np.ndarray:
+    """Best power per cell from lines the DEM doesn't cover at all.
+
+    Drainage is read at the line point nearest the cell; head is the cell's
+    own elevation range (lines >= 100 m), else the line's MAXZ - MINZ, else a
+    2% slope guess over its length.
+    """
+    out = np.zeros(len(candidates))
+    tree = STRtree(lines.geometry.values)
+    for pos, (idx, geom) in enumerate(zip(candidates.index, candidates.geometry.values)):
+        for li in tree.query(geom.buffer(STREAM_BUFFER_M), predicate="intersects"):
+            line = lines.iloc[li]
+            lg = line.geometry
+            n = int(np.floor(lg.length / HYDRO_PROFILE_STEP_M + 1e-9)) + 1
+            j = int(np.clip(np.rint(lg.project(geom.centroid) / HYDRO_PROFILE_STEP_M), 0, n - 1))
+            area = float(drainage[line_first[li] + j])
+            if area < MIN_DRAINAGE_AREA_KM2:
                 continue
-
-            flow_rate = _estimate_flow_rate(drainage_area)
-
-            feat_code = stream.get("FEAT_CODE", "")
-            is_connector = isinstance(feat_code, str) and feat_code.startswith("WACO")
-
-            # Get head from DEM along a longer river stretch
             head = 0.0
-            had_dem_data = False
-            if has_dem and dem_src is not None:
-                head, had_dem_data = _compute_head_along_river(
-                    dem_src, stream_geom, cell.geometry
-                )
-
-                # Fallback: if along-river sampling had NO DEM coverage at all
-                # (not "had data but stream is flat"), use the cell's own
-                # elevation range as proxy.  Only for true coverage gaps
-                # and only for real river segments (not short connectors).
-                if (not had_dem_data and cell_zonal is not None
-                        and stream_geom.length >= 100 and not is_connector):
-                    cell_range = cell_zonal.get(idx)
-                    if cell_range is not None and cell_range >= MIN_HEAD_M:
-                        head = cell_range
-
-            if head < MIN_HEAD_M and not had_dem_data and not is_connector:
-                # Only use fallbacks when DEM had no data along the stream
-                # and the feature is a real river/brook, not a WACO connector.
-                minz = stream.get("MINZ")
-                maxz = stream.get("MAXZ")
+            if cell_zonal is not None and lg.length >= 100:
+                cell_range = cell_zonal.get(idx)
+                if cell_range is not None and cell_range >= MIN_HEAD_M:
+                    head = cell_range
+            if head < MIN_HEAD_M:
+                minz, maxz = line.get("MINZ"), line.get("MAXZ")
                 if pd.notna(minz) and pd.notna(maxz) and abs(maxz - minz) > 0.1:
                     head = abs(maxz - minz)
                 else:
-                    head = stream_geom.length * 0.02  # 2% slope proxy
-
+                    head = lg.length * 0.02  # 2% slope proxy
             if head < MIN_HEAD_M:
                 continue
-
-            power = _estimate_power(flow_rate, head)
-            best_power = max(best_power, power)
-
-        scores.append(_lookup_score(best_power, HYDRO_POWER_THRESHOLDS))
-
-    if dem_src is not None:
-        dem_src.close()
-
-    return pd.Series(scores, index=candidates.index, dtype=float)
+            out[pos] = max(out[pos], _estimate_power(_estimate_flow_rate(area), head))
+    return out
