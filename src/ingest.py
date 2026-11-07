@@ -1316,6 +1316,52 @@ def ingest_waterbodies(config: Config) -> Path | None:
     return out_path
 
 
+def ingest_civic(config: Config) -> Path | None:
+    """Ingest civic address points into ``processed/civic.gpkg`` (optional).
+
+    Reads every GPKG, shapefile or GeoJSON under ``data/raw/civic/`` (the NS
+    civic address file is often downloaded per county; the files are
+    concatenated), reprojects to the working CRS and keeps the points inside
+    the study area. scoring/access.py reads the output: a civic address in a
+    cell scores access 100.
+    """
+    import pandas as pd
+
+    raw = config.paths.raw
+    processed = config.paths.processed
+    out_path = processed / "civic.gpkg"
+
+    if out_path.exists():
+        logger.info("Civic addresses already processed: %s", out_path)
+        return out_path
+
+    civic_dir = raw / "civic"
+    candidates = sorted(
+        p for ext in ("*.gpkg", "*.shp", "*.geojson") for p in civic_dir.rglob(ext)
+    ) if civic_dir.exists() else []
+    if not candidates:
+        logger.info("No civic address data found in %s (optional); skipping", civic_dir)
+        return None
+
+    frames = []
+    for src_file in candidates:
+        logger.info("Ingesting civic addresses from %s", src_file)
+        frames.append(_reproject_to_working(gpd.read_file(src_file), config.working_crs))
+    gdf = gpd.GeoDataFrame(pd.concat(frames, ignore_index=True), crs=config.working_crs)
+    gdf = gdf[gdf.geometry.notna() & ~gdf.geometry.is_empty]
+
+    bbox_geom = box(*config.study_area.bbox)
+    gdf = gdf[gdf.intersects(bbox_geom)].copy()
+    if gdf.empty:
+        logger.info("No civic addresses within study area")
+        return None
+
+    processed.mkdir(parents=True, exist_ok=True)
+    gdf.to_file(out_path, driver="GPKG")
+    logger.info("Civic addresses processed: %s (%d points)", out_path, len(gdf))
+    return out_path
+
+
 def run_ingest(config: Config, logger: logging.Logger, force: bool = False) -> dict[str, Path | None]:
     """Run all ingestion steps. Returns dict of layer_name -> processed path.
 
@@ -1341,6 +1387,7 @@ def run_ingest(config: Config, logger: logging.Logger, force: bool = False) -> d
     results["flood"] = ingest_flood(config)
     results["wind"] = ingest_wind(config)
     results["waterbodies"] = ingest_waterbodies(config)
+    results["civic"] = ingest_civic(config)
     results["parcels"] = ingest_parcels(config)
 
     logger.info("=== Ingestion summary ===")
