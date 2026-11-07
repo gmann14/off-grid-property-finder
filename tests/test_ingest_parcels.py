@@ -170,6 +170,44 @@ def test_fetch_nsprd_aborts_on_error_json_mid_pagination():
     assert result is None  # aborted, not a partial 1-parcel result
 
 
+def _capped_server(n_records, cap, flag_where):
+    """A mocked ArcGIS query endpoint holding ``n_records`` parcels that
+    returns at most ``cap`` per request whatever resultRecordCount asks for,
+    flagging a truncated page with exceededTransferLimit either at the top
+    level (f=json style) or under "properties" (what f=geojson returns)."""
+    from urllib.parse import parse_qs, urlparse
+
+    def get(url, timeout=None):
+        q = parse_qs(urlparse(url).query)
+        offset, count = int(q["resultOffset"][0]), int(q["resultRecordCount"][0])
+        ids = range(offset, min(offset + min(count, cap), n_records))
+        body = {"type": "FeatureCollection", "features": [
+            {"type": "Feature", "properties": {"OBJECTID": i, "PID": f"6{i:07d}"},
+             "geometry": {"type": "Polygon", "coordinates": [[[-64.5, 44.3], [-64.49, 44.3],
+                                                               [-64.49, 44.31], [-64.5, 44.3]]]}}
+            for i in ids
+        ]}
+        if offset + len(ids) < n_records:
+            if flag_where == "top":
+                body["exceededTransferLimit"] = True
+            else:
+                body["properties"] = {"exceededTransferLimit": True}
+        return _mock_response(body)
+    return get
+
+
+@pytest.mark.parametrize("flag_where", ["top", "properties"])
+def test_fetch_nsprd_pages_by_rows_returned_when_server_caps_pages(flag_where):
+    """A server capping pages at 500 (below the 1000 page size asked for) must
+    neither end the fetch after the first short page nor skip rows 500-999 by
+    advancing the offset by the page size instead of the rows returned."""
+    with patch("requests.get", side_effect=_capped_server(1200, 500, flag_where)) as mock_get:
+        result = fetch_nsprd_parcels((360000, 4880000, 410000, 4930000), page_size=1000)
+    assert result is not None
+    assert sorted(result["OBJECTID"]) == list(range(1200))
+    assert mock_get.call_count == 3
+
+
 def test_fetch_nsprd_empty_first_page_returns_none():
     with patch("requests.get") as mock_get:
         mock_get.return_value = _mock_response({"type": "FeatureCollection", "features": []})

@@ -685,6 +685,16 @@ def _build_nsprd_query_url(
     return f"{base_url.rstrip('/')}/{layer_id}/query?{urlencode(params)}"
 
 
+def _exceeded_transfer_limit(payload: dict) -> bool:
+    """Whether an ArcGIS query response says more records are left: the flag
+    sits at the top level for f=json and under "properties" for f=geojson."""
+    if not isinstance(payload, dict):
+        return False
+    props = payload.get("properties")
+    return bool(payload.get("exceededTransferLimit")
+                or (isinstance(props, dict) and props.get("exceededTransferLimit")))
+
+
 def _features_to_gdf(geojson: dict) -> gpd.GeoDataFrame:
     """Parse an ArcGIS GeoJSON FeatureCollection into a GeoDataFrame (4326)."""
     features = (geojson or {}).get("features", [])
@@ -703,8 +713,9 @@ def fetch_nsprd_parcels(
 ) -> gpd.GeoDataFrame | None:
     """Fetch NSPRD parcel polygons (with PID) from the public ArcGIS REST service.
 
-    Queries by the study-area bounding box, paginating until the server stops
-    returning a full page. Network-dependent and best-effort: returns ``None``
+    Queries by the study-area bounding box, paginating by the rows each page
+    returns until a page comes back short without exceededTransferLimit, or
+    empty. Network-dependent and best-effort: returns ``None``
     on any failure so the caller can fall back to a local file. Geometry is
     reprojected to ``working_crs``.
     """
@@ -758,9 +769,13 @@ def fetch_nsprd_parcels(
                 break
             pages.append(page)
             logger.info("NSPRD: fetched %d parcels (offset %d)", len(page), offset)
-            if len(page) < page_size and not payload.get("exceededTransferLimit"):
+            # A server may cap a page below the size asked for (its
+            # maxRecordCount) and say so with exceededTransferLimit, which
+            # f=geojson puts under "properties". Page on by the rows actually
+            # returned, so a capped page doesn't skip the rows after it.
+            if len(page) < page_size and not _exceeded_transfer_limit(payload):
                 break
-            offset += page_size
+            offset += len(page)
         else:
             logger.warning("NSPRD paging hit the %d-record cap; results may be truncated "
                            "(server may not support resultOffset paging)", max_offset)
