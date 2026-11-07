@@ -35,7 +35,7 @@ def run_score(config: Config, logger: logging.Logger, limit: int | None = None) 
     whole pipeline (exclusions → score → confidence → parcels → export) before
     committing to a full ~15-min run.
     """
-    from src.manifest import verify_manifest_fresh
+    from src.manifest import MissingProcessedDataError, verify_manifest_fresh
 
     processed = config.paths.processed
     output = config.paths.output
@@ -45,13 +45,14 @@ def run_score(config: Config, logger: logging.Logger, limit: int | None = None) 
     # StaleProcessedDataError, which the CLI turns into exit code 1) rather
     # than silently scoring against the wrong region's or wind config's data.
     verify_manifest_fresh(config)
-    output.mkdir(parents=True, exist_ok=True)
 
-    # Load candidate grid
+    # Load candidate grid. Without one there is nothing to score: fail (the CLI
+    # exits 1) rather than return as if the run had worked.
     grid_path = processed / "candidate_grid.gpkg"
     if not grid_path.exists():
-        logger.error("Candidate grid not found at %s. Run 'prepare' first.", grid_path)
-        return
+        raise MissingProcessedDataError(
+            f"Candidate grid not found at {grid_path}. Run `python -m src prepare` first.")
+    output.mkdir(parents=True, exist_ok=True)
 
     candidates = gpd.read_file(grid_path)
     if limit is not None and limit > 0:

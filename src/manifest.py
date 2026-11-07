@@ -180,6 +180,12 @@ class StaleProcessedDataError(RuntimeError):
     """Raised when data/processed/ was built from a different config."""
 
 
+class MissingProcessedDataError(StaleProcessedDataError):
+    """Raised when a processed input a command can't run without is missing
+    (e.g. score with no candidate_grid.gpkg). A subclass of
+    StaleProcessedDataError so the CLI's existing handler exits 1 on it too."""
+
+
 def check_and_update_manifest(config: Config, force: bool = False) -> None:
     """Guard for ingest/prepare entry points: detect config drift vs. the
     processed-data manifest.

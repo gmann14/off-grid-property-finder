@@ -83,6 +83,27 @@ def test_cli_score_refuses_unrecorded_wind_with_exit_code_1(runner, tmp_path):
     assert result.exit_code == 1
 
 
+def test_cli_score_without_a_candidate_grid_exits_1(runner, tmp_path):
+    """Regression: score logged "Candidate grid not found" and exited 0, so
+    `score && visualize` carried on with the previous run's output."""
+    (tmp_path / "processed").mkdir()
+    result = runner.invoke(cli, ["--config", str(_write_config(tmp_path)), "score"])
+    assert result.exit_code == 1
+    assert not (tmp_path / "out").exists()  # refused before writing anything
+
+
+def test_run_score_without_a_candidate_grid_raises(tmp_path):
+    import logging
+
+    from src.config import load_config
+    from src.manifest import MissingProcessedDataError
+    from src.score import run_score
+
+    (tmp_path / "processed").mkdir()
+    with pytest.raises(MissingProcessedDataError, match="candidate_grid.gpkg"):
+        run_score(load_config(_write_config(tmp_path)), logging.getLogger("test"))
+
+
 def test_cli_snapshot_fails_without_a_score_run(runner, tmp_path):
     cfg = _write_config(tmp_path)
     result = runner.invoke(cli, ["--config", str(cfg), "snapshot", "--out", str(tmp_path / "res")])
