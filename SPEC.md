@@ -696,7 +696,7 @@ See [IMPLEMENTATION-BACKLOG.md](./IMPLEMENTATION-BACKLOG.md) for the execution p
 │       ├── buildings.gpkg     # Ingested building footprints
 │       ├── land_cover.gpkg    # Ingested land cover
 │       ├── parcels.gpkg       # Ingested parcels (when available)
-│       ├── civic_addresses.gpkg  # Ingested civic addresses
+│       ├── civic.gpkg  # Ingested civic addresses
 │       ├── protected_areas.gpkg  # Clipped protected areas
 │       └── flood.gpkg         # Clipped flood zones
 ├── src/

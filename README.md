@@ -49,10 +49,10 @@ Each eligible cell receives a weighted composite score (0-100):
 | Criterion | Weight | What it measures |
 |-----------|--------|------------------|
 | **Hydro** | 40% | Micro-hydro power potential from nearby streams (head x flow x efficiency). Drainage area from a validated flow-accumulation raster when available, else a segment-length proxy. |
-| **Access** | 20% | Distance to nearest road or civic address (not legal access) |
-| **Open ground** | 15% | Flat, open, unbuilt, non-water land area — ground-mount solar room + building pad (small south-facing bonus) |
+| **Access** | 20% | Distance from the cell to the nearest road or civic address (not legal access); "within 50/200/500 m" is measured from the cell's edge, inclusive |
+| **Open ground** | 15% | Flat, open, unbuilt, non-water land area — ground-mount solar room + building pad (small bonus when a quarter of that open ground faces south; none for a cell with no open ground) |
 | **Wind** | 15% | Estimated mean wind speed at a small off-grid turbine's hub height (default 30 m, `wind.hub_height_m`), extrapolated down from the Global Wind Atlas 50 m and 100 m layers with a per-pixel power-law shear fit (GWA's 10 m layer sits inside the forest canopy and isn't used). Bands: ≥6.0 m/s 100, 5.0–6.0 85, 4.5–5.0 65, 4.0–4.5 40, <4.0 15. Falls back to terrain exposure (TPI ridge/hilltop) as a proxy if GWA is unreachable. |
-| **Elevation** | 10% | Coastal-flood penalty only — low/at-risk coastal land scores low; high, exposed ground is *not* penalized |
+| **Elevation** | 10% | Coastal-flood penalty only — low/at-risk coastal land scores low; high, exposed ground is *not* penalized. Uses the mean of the cell's land pixels, so sea in a shore cell doesn't pull it down |
 
 Hydro dominates because it's the scarce, hard-to-replicate differentiator and the best winter generator — solar works almost everywhere in NS, so it's a weak land-selection signal. Weights are configurable in `config.yaml` and auto-renormalize when criteria are disabled. The older `solar` and `buildable` criteria remain registered (and unit-tested) but are off by default — they were near-constant in NS and are superseded by `open_ground`.
 
@@ -69,8 +69,10 @@ Cells are excluded (`score = null`) when:
 - Parcels get cells by centroid containment, except that a mostly-land shore cell whose centroid is in water goes to the parcel holding most of its land, not to a water lot.
 - A parcel's size score and the 40-acre severance rule use its land acres (`land_acres`): its acreage less any of that water inside it, so a water lot or a lakefront lot drawn out into the lake doesn't rank as a big parcel. `area_acres` (the whole mapped area) is still exported next to it.
 - A parcel with less land than `min_parcel_area_acres` (default 1 acre) gets no score or rank and is flagged `parcel_below_min_area` (SPEC §2.1).
+- NSPRD polygons that are not property — road rights-of-way and water lots (their `ROADWAT` code) and placeholder PIDs such as `00000006` — are never ranked or made severance candidates, and are flagged `parcel_not_property`.
+- `area_acres` is the whole parcel, measured before the clip to the study area; for a parcel cut by the study-area edge, `land_acres` is an estimate (its water share is measured on the part inside).
 
-Excluded cells are still emitted in output with `status = excluded` and explicit `exclusion_reasons`.
+Excluded cells are still emitted in output with `status = excluded` and explicit `exclusion_reasons` (always in the order `protected_area; flood_zone; water`, so the strings group cleanly).
 
 ### Confidence Scoring
 
@@ -80,6 +82,9 @@ Each cell gets a confidence score (0-100) and band (high/medium/low). Starts at 
 - DEM is 20m resolution, not LiDAR (-15)
 - Incomplete land-cover mask (-10)
 - No road evidence within 200m (-15)
+- Wind from terrain exposure only, not a wind raster (-10)
+
+Amounts come from `confidence_deductions` in `config.yaml`. Parcels carry the lowest confidence of the cells their score rests on.
 
 ## CLI Commands
 
@@ -121,14 +126,17 @@ Place raw data in `data/raw/` subdirectories:
 
 | Directory | Dataset | Source | Required? |
 |-----------|---------|--------|-----------|
-| `dem/` | DEM raster (GeoTIFF) | [CDEM](https://ftp.maps.canada.ca/pub/nrcan_rncan/elevation/cdem_mnec/) or [HRDEM](https://open.canada.ca/data/en/dataset/957782bf-847c-4644-a757-e383c0057995) | Yes |
+| `dem/` | DEM raster(s) (GeoTIFF; every tile is mosaicked, HRDEM gaps filled from CDEM, with a warning if the study area isn't covered) | [CDEM](https://ftp.maps.canada.ca/pub/nrcan_rncan/elevation/cdem_mnec/) or [HRDEM](https://open.canada.ca/data/en/dataset/957782bf-847c-4644-a757-e383c0057995) | Yes |
 | `hydro/` | Stream network (GDB/Shapefile) | [NSHN](https://data.novascotia.ca/datasets/dk27-q8k2) | Yes |
 | `roads/` | Road network (OSM PBF) | [Geofabrik](https://download.geofabrik.de/north-america/canada/nova-scotia-latest.osm.pbf) | Yes |
 | `buildings/` | Building footprints (GPKG) | [NRCan](https://open.canada.ca/data/en/dataset/7a5cda52-c7df-427f-9ced-26f19a8a64d6) | Yes |
 | `land-cover/` | Land cover polygons (Shapefile) | [NSTDB](https://nsgi.novascotia.ca/WSF_DDS/DDS.svc/DownloadFile?tkey=fhrTtdnDvfytwLz6&id=13) | Yes |
-| `exclusions/` | Protected areas, flood zones | [GeoNova](https://geonova.novascotia.ca/geodata/) | Recommended |
+| `exclusions/protected_areas/` | Protected areas (every file in it is read; flood zones are fetched from the NS Coastal Program, not read from here) | [GeoNova](https://geonova.novascotia.ca/geodata/) | Recommended |
+| `civic/` | Civic address points (any vector format; every file is read) | NS civic addressing | Optional |
 | `crown-land/` | Crown land parcels (Shapefile) | [NS Open Data](https://data.novascotia.ca/Lands-Forests-and-Wildlife/Crown-Land/3nka-59nz) | Optional |
 | `parcels/` | Property parcels with PID (NSPRD) | `ingest-parcels --from-rest` (free, public — see DATA-SOURCES §5.1) or [GeoNOVA](https://geonova.novascotia.ca/nova-scotia-property-records-parcels) (fee/restricted bulk download); for a few parcels use ViewPoint/PVSC lookups | Stage B (PIDs) |
+
+Layers that can be tiled or split (DEM tiles, buildings, parcels, waterbodies, civic, protected areas, NSTDB POLY sheets) read every matching file. Layers where only one file can be right (streams, roads, other land-cover files, Crown land) stop with an "ambiguous" error if several are present. `check-data` uses the same rules, so it reports what `ingest` will actually read.
 
 Neither `data/raw/` nor `data/processed/` is committed to the repo (both are gitignored) — a fresh clone must run `prepare` before scoring. Flood (NS Coastal Program) and wind (Global Wind Atlas) need no raw download at all: `prepare`/`ingest` fetch them directly into `data/processed/` from public services. To re-ingest from scratch (e.g., to change the study area), delete `data/processed/`, place the raw files above in `data/raw/`, and run `python -m src prepare`.
 
@@ -154,11 +162,11 @@ All output goes to `output/`:
 | `scored_cells.csv` | All cells with lat/lon, scores, confidence |
 | `scored_cells.geojson` | GeoJSON in WGS84 for web mapping |
 | `ranked_eligible.csv` | Eligible cells only, sorted by rank |
-| `ranked_parcels.csv` | **PID candidate list** — scored parcels sorted best-first (Stage B; only when parcel data is present) |
+| `ranked_parcels.csv` | **PID candidate list** — scored parcels sorted best-first, ties by PID (Stage B; only when parcel data is present). Includes each parcel's `confidence`, `confidence_band`, the flags of the cells its score rests on, and `top_<criterion>` means of those cells, which rebuild `cell_score` |
 | `scored_parcels.gpkg` / `.geojson` | Parcels with aggregated scores and geometry (Stage B) |
 | `map.html` | Interactive Folium map with color-coded cells (+ a "Scored Parcels (PID)" layer when available) |
 
-Each record includes: `score`, `status`, `exclusion_reasons`, `confidence_score`, `confidence_band`, and `flags`.
+Each cell record includes `cell_id` (first column, joins the CSVs to the GPKG), `score`, `status`, `exclusion_reasons`, `confidence`, `confidence_band`, and `flags`. When nothing ranks, the ranked CSVs are written with a header only, and a run without parcels removes the previous run's parcel outputs, so `output/` never mixes runs. `score`, `visualize` and `ingest-parcels` exit 1 when they can't produce their output (stale or missing processed data, a failing scorer, no parcels).
 
 ## Project Structure
 
