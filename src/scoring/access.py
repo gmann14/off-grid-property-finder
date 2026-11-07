@@ -16,10 +16,12 @@ logger = logging.getLogger("property_finder")
 
 
 def _lookup_score(value: float, thresholds: list[tuple]) -> int:
+    """Score for a distance. SPEC's bands are "within X m", so each band's
+    upper edge is inclusive (low < d <= high); (0, 0) is the road-in-cell band."""
     for low, high, score in thresholds:
         if low == high and value == low:
             return score  # Exact match (e.g., distance == 0)
-        if low <= value < high:
+        if low < value <= high:
             return score
     return 0
 
@@ -29,13 +31,13 @@ def _compute_min_distances(
     features: gpd.GeoDataFrame,
     max_dist: float = 500.0,
 ) -> pd.Series:
-    """Compute minimum distance from each cell centroid to nearest feature.
+    """Compute the minimum distance from each cell to the nearest feature.
 
     Uses two bulk STRtree queries (not a per-cell Python loop). Returns 0 if a
-    feature intersects the cell POLYGON itself — not just near the centroid,
-    so a road crossing a far corner of a large cell still counts as direct
-    access — else the nearest feature's distance to the centroid within
-    `max_dist`, else inf.
+    feature intersects the cell polygon, else the distance from the cell
+    POLYGON (its nearest edge, not its centre) to the nearest feature within
+    `max_dist`, else inf. Measuring from the centre put a road just outside a
+    250 m cell >= 125 m away, so SPEC's "within 50 m" band could never apply.
     """
     n = len(candidates)
     distances = np.full(n, np.inf)
@@ -50,13 +52,12 @@ def _compute_min_distances(
     if inter.size:
         distances[np.unique(inter[0])] = 0.0
 
-    # Step 2: remaining cells — nearest feature to centroid, within max_dist
-    # (beyond that, query_nearest simply omits the point, leaving it at inf).
+    # Step 2: remaining cells — nearest feature to the cell polygon, within
+    # max_dist (beyond that, query_nearest omits the cell, leaving it at inf).
     remaining = np.where(np.isinf(distances))[0]
     if remaining.size:
-        centroids = candidates.geometry.centroid.values[remaining]
         idx, dist = tree.query_nearest(
-            centroids, max_distance=max_dist, all_matches=False, return_distance=True
+            cell_geoms[remaining], max_distance=max_dist, all_matches=False, return_distance=True
         )
         distances[remaining[idx[0]]] = dist
 

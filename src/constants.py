@@ -45,6 +45,8 @@ COASTAL_LOW_ELEVATION_SCORES = frozenset(
     {s for _lo, hi, s in ELEVATION_THRESHOLDS if hi <= COASTAL_LOW_ELEVATION_M} | {0}
 )
 
+# Distance from the cell polygon (not its centre) to the nearest road or civic
+# address. Bands are low < d <= high: SPEC says "within" 50/200/500 m.
 ACCESS_DISTANCE_THRESHOLDS = [
     (0, 0, 100),     # Road intersects cell or civic address in cell
     (0, 50, 80),     # Within 50m
