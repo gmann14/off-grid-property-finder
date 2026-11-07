@@ -169,3 +169,52 @@ def test_coastline_next_to_a_bluff_scores_no_hydro(tmp_path):
 
     scores = score_hydro(candidates, _hydro_config(tmp_path, bounds))
     assert scores.iloc[0] == 0
+
+
+def _flat_dem_brook(tmp_path):
+    """A 1 km cell-crossing brook on a flat DEM, whose MINZ/MAXZ attributes
+    claim 20 m of drop: 0 with the DEM, but 80 if head falls back to MINZ/MAXZ."""
+    xmin, ymin = 380000.0, 4900000.0
+    bounds = (xmin, ymin, xmin + 1000, ymin + 1000)
+    cell = box(xmin + 375, ymin + 375, xmin + 625, ymin + 625)
+    candidates = gpd.GeoDataFrame({"cell_id": [0]}, geometry=[cell], crs="EPSG:2961")
+    gpd.GeoDataFrame(
+        {"FEAT_CODE": ["WARV50"], "LINE_CLASS": [1], "FLOWDIR": [1],
+         "MINZ": [10.0], "MAXZ": [30.0]},
+        geometry=[LineString([(xmin, ymin + 500), (xmin + 1000, ymin + 500)])],
+        crs="EPSG:2961",
+    ).to_file(tmp_path / "streams.gpkg", driver="GPKG")
+    _write_raster(tmp_path / "dem.tif", bounds, np.full((100, 100), 20.0))
+    return candidates, _hydro_config(tmp_path, bounds)
+
+
+def test_failed_cell_range_precompute_is_logged_and_keeps_dem_head(tmp_path, monkeypatch, caplog):
+    """Regression: an exception in the per-cell range precompute set
+    has_dem=False silently, so head came from MINZ/MAXZ (score 80) instead of
+    the DEM (flat: score 0)."""
+    import logging
+
+    import src.zonal
+
+    candidates, config = _flat_dem_brook(tmp_path)
+    assert score_hydro(candidates, config).iloc[0] == 0
+
+    def boom(*args, **kwargs):
+        raise MemoryError("label raster too big")
+
+    monkeypatch.setattr(src.zonal, "grid_zonal_stats", boom)
+    with caplog.at_level(logging.WARNING, logger="property_finder"):
+        score = score_hydro(candidates, config).iloc[0]
+    assert score == 0
+    assert "label raster too big" in caplog.text
+    assert "precompute failed" in caplog.text
+
+
+def test_unreadable_dem_is_logged(tmp_path, caplog):
+    import logging
+
+    candidates, config = _flat_dem_brook(tmp_path)
+    (tmp_path / "dem.tif").write_bytes(b"not a tiff")
+    with caplog.at_level(logging.WARNING, logger="property_finder"):
+        score_hydro(candidates, config)
+    assert "could not open DEM" in caplog.text

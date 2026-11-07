@@ -49,7 +49,9 @@ def flow_accumulation_valid(path: Path) -> bool:
             if valid.size == 0:
                 return False
             return float(valid.max()) >= FLOW_ACCUM_MIN_VALID_CELLS
-    except Exception:
+    except Exception as exc:
+        logger.warning("Hydro: could not read flow accumulation %s (%s: %s); treating it "
+                       "as invalid", path, type(exc).__name__, exc)
         return False
 
 
@@ -218,6 +220,50 @@ def _filter_to_flowing_water(streams: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
     return result
 
 
+def _open_dem(dem_path: Path):
+    """Open the DEM for head sampling, or None (logged) if it can't be used.
+
+    Without it, head falls back to the stream's MINZ/MAXZ attributes or a 2%
+    slope guess, so say so loudly rather than scoring on that silently.
+    """
+    if not dem_path.exists():
+        logger.warning("Hydro: no DEM at %s; head falls back to stream MINZ/MAXZ "
+                       "or a 2%% slope guess", dem_path)
+        return None
+    try:
+        import rasterio
+        return rasterio.open(dem_path)
+    except Exception as exc:  # rasterio raises RasterioIOError, but be explicit
+        logger.warning("Hydro: could not open DEM %s (%s: %s); head falls back to "
+                       "stream MINZ/MAXZ or a 2%% slope guess",
+                       dem_path, type(exc).__name__, exc)
+        return None
+
+
+def _cell_elevation_ranges(candidates: gpd.GeoDataFrame, dem_path: Path) -> dict | None:
+    """Per-cell DEM elevation range (max - min), keyed by candidate index.
+
+    Used only as a fallback head for streams with no DEM coverage along them.
+    Returns None (logged) if the precompute fails; the DEM is still used for
+    along-stream head either way.
+    """
+    try:
+        from src.zonal import grid_zonal_stats
+        ranges = grid_zonal_stats(candidates.geometry, dem_path, stats=("range",))["range"]
+    except Exception as exc:
+        logger.warning("Hydro: per-cell elevation-range precompute failed (%s: %s); "
+                       "streams with no DEM coverage get no cell-range fallback head",
+                       type(exc).__name__, exc)
+        return None
+    cell_zonal = {
+        idx: (None if np.isnan(r) else float(r))
+        for idx, r in zip(candidates.index, ranges)
+    }
+    n_with_range = sum(1 for v in cell_zonal.values() if v is not None and v > 0)
+    logger.info("Hydro: precomputed cell elevation ranges for %d cells", n_with_range)
+    return cell_zonal
+
+
 @register("hydro")
 def score_hydro(candidates: gpd.GeoDataFrame, config: Config) -> pd.Series:
     """Score cells by micro-hydro potential.
@@ -256,33 +302,18 @@ def score_hydro(candidates: gpd.GeoDataFrame, config: Config) -> pd.Series:
             facc_src = rasterio.open(facc_path)
             facc_px_km2 = (abs(facc_src.res[0]) * abs(facc_src.res[1])) / 1e6
             logger.info("Hydro: using validated flow-accumulation raster for drainage area")
-        except Exception:
+        except Exception as exc:
+            logger.warning("Hydro: could not open flow accumulation %s (%s: %s)",
+                           facc_path, type(exc).__name__, exc)
             facc_src = None
     if facc_src is None:
         logger.info("Hydro: flow-accumulation unavailable/invalid; using segment-length proxy")
 
-    has_dem = dem_path.exists()
-    dem_src = None
-    cell_zonal = None
-    if has_dem:
-        try:
-            import rasterio
-
-            from src.zonal import grid_zonal_stats
-
-            dem_src = rasterio.open(dem_path)
-
-            # Precompute elevation range per cell (vectorized) — used as fallback
-            # when along-river DEM sampling has no coverage.
-            ranges = grid_zonal_stats(candidates.geometry, dem_path, stats=("range",))["range"]
-            cell_zonal = {
-                idx: (None if np.isnan(r) else float(r))
-                for idx, r in zip(candidates.index, ranges)
-            }
-            n_with_range = sum(1 for v in cell_zonal.values() if v is not None and v > 0)
-            logger.info("Hydro: precomputed cell elevation ranges for %d cells", n_with_range)
-        except Exception:
-            has_dem = False
+    dem_src = _open_dem(dem_path)
+    has_dem = dem_src is not None
+    # Per-cell elevation range: only a fallback head for streams with no DEM
+    # coverage along them. Its failure must not switch the DEM off for head.
+    cell_zonal = _cell_elevation_ranges(candidates, dem_path) if has_dem else None
 
     scores = []
     for idx, cell in candidates.iterrows():
